@@ -1,0 +1,16 @@
+{
+  "name": "ideal-guide-ai-company",
+  "version": "1.0.0",
+  "description": "7개 부서 AI 에이전트가 스스로 학습하고 일하는 AI 자동화 회사",
+  "type": "module",
+  "scripts": {
+    "company": "node src/run.js",
+    "company:goal": "node src/run.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
