@@ -128,7 +128,7 @@ const RETRO_SCHEMA = {
     next_actions: {
       type: "array",
       items: { type: "string" },
-      description: "사용자(1인 창업자)가 내일 실제로 해야 할 행동 목록",
+      description: "운영진(8명 팀)이 내일 실제로 해야 할 행동 목록 (담당 팀 표시)",
     },
     lessons: {
       type: "array",
