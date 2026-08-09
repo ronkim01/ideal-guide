@@ -56,10 +56,13 @@ export function readFileIfExists(p, fallback = "") {
 }
 
 export function readBusinessProfile() {
-  return readFileIfExists(
+  const business = readFileIfExists(
     path.join(COMPANY_DIR, "business.md"),
     "(비즈니스 프로필이 아직 작성되지 않았습니다. company/business.md를 작성하세요.)"
   );
+  // 전략 문서가 있으면 함께 주입 — 모든 부서가 같은 전략 기준으로 일하게 한다.
+  const strategy = readFileIfExists(path.join(COMPANY_DIR, "strategy.md"));
+  return strategy ? `${business}\n\n---\n\n${strategy}` : business;
 }
 
 export function readDepartmentPrompt(deptId) {
