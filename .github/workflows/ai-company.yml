@@ -1,0 +1,45 @@
+# 매일 아침 9시(KST)에 AI 회사가 스스로 하루 업무를 수행하고 결과를 커밋한다.
+# 필요 설정: 저장소 Settings → Secrets and variables → Actions → ANTHROPIC_API_KEY 등록
+name: AI Company Daily Run
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # 매일 00:00 UTC = 09:00 KST
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: "오늘의 목표 (비워두면 대표실이 스스로 결정)"
+        required: false
+        default: ""
+
+jobs:
+  run-company:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run AI company daily cycle
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node src/run.js "${{ github.event.inputs.goal }}"
+
+      - name: Commit results
+        run: |
+          git config user.name "ai-company-bot"
+          git config user.email "ai-company-bot@users.noreply.github.com"
+          git add workspace company/memory
+          if git diff --cached --quiet; then
+            echo "커밋할 변경사항 없음"
+          else
+            git commit -m "🤖 AI 회사 일일 업무 결과 ($(TZ=Asia/Seoul date +%F))"
+            git push
+          fi
