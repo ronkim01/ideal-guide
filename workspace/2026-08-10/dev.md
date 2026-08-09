@@ -1,542 +1,760 @@
 # 2026-08-10 개발팀 결과물
 
-# 일본어몰(valluat.com/ja) 기술 요건 점검 — 개발팀 산출물
+# 자사몰 전환율·재구매 개선 — 9월 성수기 대응 실행안 (2026-08-10 착수)
 
-> **결론 먼저**
-> 1. 다국어 구조는 **서브폴더 `valluat.com/ja/`** 가 1순위. 단, 현 솔루션이 Cafe24/메이크샵이면 멀티샵 구조상 **`jp.valluat.com` 서브도메인**으로 강제될 가능성이 높음 → **오늘 안에 스택 판별 스크립트 실행으로 확정**.
-> 2. 결제는 **JCB 카드 + PayPay + 콤비니 + Paidy(후불)** 4종이 필수. 한국 법인 상태에서 이 4종을 한 번에 붙일 수 있는 현실적 PSP는 **KOMOJU(1순위) / Eximbay(백업)**. Stripe·GMO·SBPS는 **일본 법인 필요**라 2단계 과제.
-> 3. **가죽 핸드백은 일본 소액수입 면세(1만엔 이하) 대상에서 제외**되는 품목군이며 관세율도 높음 → **DDP(관세·소비세 선결제) 배송 필수**. 이 항목이 자체몰 직판 손익의 최대 변수.
-> 4. 예상 기간: **Track A(기존 솔루션 멀티샵) 4~6주 / Track B(Shopify 별도몰) 6~10주 / Track C(풀커스텀) 12~16주**.
-> ⚠️ 세율·수수료·솔루션 스펙은 벤더 공식 견적/세관 품목분류로 **반드시 재확인**(본 문서 §4 RFI 참조).
+> **전제 제거 원칙**: 이 문서의 모든 산출물은 **커머스 스택(Cafe24 / Shopify / Makeshop / 자체)에 종속되지 않도록** 설계했다.
+> 스택 판별 결과가 바뀌어도 달라지는 것은 "**코드를 어디에 붙이냐**" 한 줄뿐이고, 코드·계측·대시보드·카카오 흐름은 그대로 동작한다.
+> 그래도 Step 0(5분)은 **문서 읽기 전에 먼저 실행**한다. 결과를 §0.3 표에 기입해야 배포 경로가 확정된다.
 
 ---
 
-# 1. 제작물
+## 0. Step 0 — 스택/계측 판별 (5분, 착수 즉시 실행)
 
-## 1-1. 스택 판별 스크립트 (오늘 즉시 실행 → 모든 분기의 전제)
+### 0.1 브라우저 콘솔 스크립트 (`tools/stack-probe.js`)
 
-현 valluat.com이 무엇으로 돌아가는지에 따라 아래 모든 요건의 난이도가 2~3배 차이납니다. 아래 스크립트를 실행해 **오늘 오전 중 확정**하십시오.
-
-**`stack-detect.mjs`** (Node 18+, 의존성 없음)
+valluat.com **마리백 상세페이지**를 크롬(모바일 에뮬레이션 iPhone 12 Pro)으로 열고 F12 → 콘솔에 붙여넣기.
 
 ```js
-// 사용법: node stack-detect.mjs https://valluat.com
-// 목적: 커머스 솔루션/CDN/다국어 처리 방식/기존 hreflang 유무를 1분 안에 판별
-const url = process.argv[2] || 'https://valluat.com';
+/* VALLUAT stack probe v1 — 결과를 dev 문서 §0.3에 기입 */
+(() => {
+  const h = document.documentElement.innerHTML;
+  const has = k => h.indexOf(k) > -1;
+  const stack =
+    (window.Shopify || has('cdn.shopify.com')) ? 'Shopify' :
+    (has('/web/upload/') || has('EC_ENGINE') || has('cafe24')) ? 'Cafe24' :
+    has('makeshop') ? 'Makeshop' :
+    has('imweb') ? 'Imweb' :
+    has('godomall') || has('NHN') ? 'Godomall' : '자체/기타';
 
-const SIGS = [
-  ['Cafe24',      /cafe24|ec-cube-cafe24|\.cafe24\.com|CAFE24|EC_SHOP_ID/i],
-  ['Shopify',     /cdn\.shopify\.com|Shopify\.theme|shopify-features/i],
-  ['MakeShop',    /makeshop\.co\.kr|makeshop\.kr/i],
-  ['Godomall',    /godomall|godo\.co\.kr/i],
-  ['Imweb',       /imweb\.me|imweb-/i],
-  ['NHN Commerce',/nhn-commerce|shopby/i],
-  ['WooCommerce', /woocommerce|wp-content/i],
-  ['Next.js',     /_next\/static/i],
-];
+  const imgs = [...document.images];
+  const big = imgs.filter(i => i.naturalHeight > 1500);
+  const lazy = imgs.filter(i => i.loading === 'lazy');
+  const nav = performance.getEntriesByType('navigation')[0] || {};
+  const res = performance.getEntriesByType('resource');
+  const imgBytes = res.filter(r => r.initiatorType === 'img')
+                      .reduce((a, r) => a + (r.transferSize || 0), 0);
 
-const PAY = [
-  ['Inicis', /inicis/i], ['KCP', /kcp\.co\.kr|payplus/i], ['Toss', /tosspayments/i],
-  ['NicePay', /nicepay/i], ['PayPal', /paypal/i], ['Eximbay', /eximbay/i], ['KOMOJU', /komoju/i],
-];
-
-const paths = ['/', '/robots.txt', '/sitemap.xml', '/ja', '/ja/', '/jp/', '/en/'];
-
-const get = async (p) => {
-  try {
-    const r = await fetch(new URL(p, url), { redirect: 'manual', headers: { 'user-agent': 'Mozilla/5.0 valluat-audit' } });
-    const body = r.status < 400 ? (await r.text()).slice(0, 400000) : '';
-    return { p, status: r.status, loc: r.headers.get('location'), server: r.headers.get('server'),
-             powered: r.headers.get('x-powered-by'), setCookie: (r.headers.get('set-cookie') || '').slice(0, 120), body };
-  } catch (e) { return { p, status: 'ERR', err: e.message, body: '' }; }
-};
-
-const res = await Promise.all(paths.map(get));
-const home = res[0];
-
-console.log('=== 1) 응답 요약 ===');
-res.forEach(r => console.log(`${r.p.padEnd(12)} ${String(r.status).padEnd(5)} ${r.loc ? '→ ' + r.loc : ''}`));
-
-console.log('\n=== 2) 헤더 ===');
-console.log('server:', home.server, '| x-powered-by:', home.powered, '| cookie:', home.setCookie);
-
-console.log('\n=== 3) 커머스 솔루션 추정 ===');
-SIGS.forEach(([n, re]) => re.test(home.body) && console.log('  ✔', n));
-
-console.log('\n=== 4) 결제 모듈 흔적 ===');
-PAY.forEach(([n, re]) => re.test(home.body) && console.log('  ✔', n));
-
-console.log('\n=== 5) 다국어/SEO 현황 ===');
-const hreflang = [...home.body.matchAll(/hreflang=["']([^"']+)["']/gi)].map(m => m[1]);
-console.log('  hreflang:', hreflang.length ? hreflang.join(', ') : '없음(신규 구축 필요)');
-console.log('  canonical:', (home.body.match(/rel=["']canonical["'][^>]*href=["']([^"']+)/i) || [])[1] || '없음');
-console.log('  lang속성:', (home.body.match(/<html[^>]*lang=["']([^"']+)/i) || [])[1] || '없음');
-console.log('  og:locale:', (home.body.match(/og:locale["'][^>]*content=["']([^"']+)/i) || [])[1] || '없음');
-console.log('  /ja 경로 존재:', res.find(r => r.p === '/ja/')?.status);
-console.log('  통화표시 JPY 흔적:', /JPY|¥|円/.test(home.body));
-```
-
-**판별 결과 → 분기 표**
-
-| 판별 결과 | 다국어 구조 실현 가능성 | 권장 Track |
-|---|---|---|
-| Cafe24 | 멀티샵(글로벌몰) = **서브도메인/별도도메인**만 가능, `/ja/` 불가 가능성 큼 | **A** (jp.valluat.com) |
-| MakeShop / 고도몰 | 글로벌 기능 제한적, 커스텀 다수 | A 또는 B |
-| Shopify | Markets 기능으로 `/ja/` 서브폴더 네이티브 지원 | **B**(최적) |
-| Next.js/자체개발 | i18n 라우팅으로 `/ja/` 자유 구현 | **C** |
-
----
-
-## 1-2. 다국어 구조 3안 비교 & 채택안
-
-| 구분 | ① 서브폴더 `valluat.com/ja/` | ② 서브도메인 `jp.valluat.com` | ③ ccTLD `valluat.jp` |
-|---|---|---|---|
-| SEO 도메인 권위 | **본체 권위 100% 승계(최강)** | 부분 승계 | 승계 없음(0부터) |
-| 일본 현지 신뢰도 | 보통 | 보통 | **최상(.jp 선호)** |
-| 구축 난이도 | 솔루션 의존(높을 수 있음) | **낮음(멀티샵 표준)** | 낮음(별도몰) |
-| 운영비 | 낮음 | 낮음 | 도메인+SSL+운영 이중화 |
-| 통계/광고 픽셀 | 통합 용이 | 도메인 분리로 크로스도메인 설정 필요 | 완전 분리 |
-| 결제/배송 분리 | 어려움(같은 체크아웃) | **쉬움** | 쉬움 |
-| 결론 | 자체개발/Shopify일 때 1순위 | **Cafe24류일 때 현실적 1순위** | 3단계(연 매출 5억엔↑ 시) |
-
-**채택안**: 기술 판별 결과에 따라 ①(Shopify/자체개발) 또는 ②(Cafe24/메이크샵).
-③ `valluat.jp` 도메인은 **오늘 방어적으로 선점만** 해두고 실제 운영은 유보 (연 3~5만원, ROI 명확).
-
-**공통 URL 규칙 (외주 전달용 확정 스펙)**
-
-```
-/ja/                       일본어 홈
-/ja/products/{handle}      상품 상세 (handle은 영문 슬러그 공통, 언어별 title만 분리)
-/ja/collections/{handle}   카테고리
-/ja/pages/tokushoho        特定商取引法に基づく表記 (일본 법정 필수)
-/ja/pages/privacy          プライバシーポリシー
-/ja/pages/shipping         配送・関税について
-/ja/pages/returns          返品・交換
-언어 협상: 자동 리다이렉트 금지(SEO 페널티/UX 저하) → 배너 제안 방식만 허용
-```
-
-## 1-3. 다국어 SEO 헤드 스니펫 & 언어 스위처
-
-**`head-ja.html`** — 모든 `/ja/` 페이지 `<head>`에 삽입
-
-```html
-<!-- ① 언어 선언 : <html lang="ja"> 로 변경 필수 -->
-<link rel="canonical" href="https://valluat.com/ja/products/{{handle}}" />
-
-<!-- ② hreflang 상호 참조 : 한국어 페이지에도 반드시 역방향 태그를 넣을 것 -->
-<link rel="alternate" hreflang="ko-KR" href="https://valluat.com/products/{{handle}}" />
-<link rel="alternate" hreflang="ja-JP" href="https://valluat.com/ja/products/{{handle}}" />
-<link rel="alternate" hreflang="x-default" href="https://valluat.com/products/{{handle}}" />
-
-<!-- ③ OG (일본 SNS/LINE 공유 대응) -->
-<meta property="og:locale" content="ja_JP" />
-<meta property="og:locale:alternate" content="ko_KR" />
-<meta property="og:site_name" content="VALLUAT（ヴァリュエット）" />
-
-<!-- ④ 상품 구조화 데이터 : 엔화·재고·배송비 명시 (구글 쇼핑 무료 리스팅 대응) -->
-<script type="application/ld+json">
-{
-  "@context":"https://schema.org","@type":"Product",
-  "name":"{{name_ja}}","brand":{"@type":"Brand","name":"VALLUAT"},
-  "image":["{{image1}}"],"description":"{{desc_ja}}",
-  "offers":{"@type":"Offer","priceCurrency":"JPY","price":"{{price_jpy}}",
-    "availability":"https://schema.org/InStock",
-    "url":"https://valluat.com/ja/products/{{handle}}",
-    "shippingDetails":{"@type":"OfferShippingDetails",
-      "shippingRate":{"@type":"MonetaryAmount","value":"{{ship_jpy}}","currency":"JPY"},
-      "shippingDestination":{"@type":"DefinedRegion","addressCountry":"JP"},
-      "deliveryTime":{"@type":"ShippingDeliveryTime",
-        "handlingTime":{"@type":"QuantitativeValue","minValue":1,"maxValue":2,"unitCode":"DAY"},
-        "transitTime":{"@type":"QuantitativeValue","minValue":3,"maxValue":6,"unitCode":"DAY"}}},
-    "hasMerchantReturnPolicy":{"@type":"MerchantReturnPolicy",
-      "applicableCountry":"JP","returnPolicyCategory":"https://schema.org/MerchantReturnFiniteReturnWindow",
-      "merchantReturnDays":7,"returnMethod":"https://schema.org/ReturnByMail",
-      "returnFees":"https://schema.org/ReturnShippingFees"}}
-}
-</script>
-```
-
-**`geo-suggest.js`** — 자동 리다이렉트 금지, 배너 제안 방식 (전환율·SEO 동시 보호)
-
-```js
-/* 일본 방문자에게 일본어몰을 "제안"만 한다. 강제 이동 금지(구글 크롤 차단 위험 + 이탈 유발) */
-(function () {
-  var KEY = 'vl_locale_pref';
-  if (location.pathname.indexOf('/ja') === 0) return;          // 이미 일본어몰
-  if (localStorage.getItem(KEY)) return;                        // 이미 선택함
-  var tz = (Intl.DateTimeFormat().resolvedOptions().timeZone || '');
-  var lang = (navigator.language || '').toLowerCase();
-  var isJP = tz === 'Asia/Tokyo' || lang.indexOf('ja') === 0;
-  if (!isJP) return;
-
-  var target = location.origin + '/ja' + location.pathname;     // 대응 페이지 매핑
-  var el = document.createElement('div');
-  el.setAttribute('role', 'dialog');
-  el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#111;color:#fff;'
-    + 'padding:14px 16px;display:flex;gap:12px;align-items:center;justify-content:center;'
-    + 'font:14px/1.5 -apple-system,"Hiragino Sans","Noto Sans JP",sans-serif';
-  el.innerHTML = '<span>日本からのアクセスですか？日本語・円表示のページをご覧いただけます。</span>'
-    + '<button id="vl-go" style="background:#fff;color:#111;border:0;padding:8px 16px;border-radius:2px;font-weight:600">日本語サイトへ</button>'
-    + '<button id="vl-no" style="background:transparent;color:#aaa;border:0;padding:8px">閉じる</button>';
-  document.body.appendChild(el);
-  document.getElementById('vl-go').onclick = function () {
-    localStorage.setItem(KEY, 'ja');
-    if (window.gtag) gtag('event', 'locale_banner_accept', { locale: 'ja' });
-    location.href = target;
+  const out = {
+    '스택': stack,
+    'GTM 설치': !!window.google_tag_manager,
+    'GTM ID': Object.keys(window.google_tag_manager || {}).filter(k=>k.startsWith('GTM')).join(',') || '-',
+    'GA4 gtag': typeof window.gtag === 'function',
+    'dataLayer 이벤트수': Array.isArray(window.dataLayer) ? window.dataLayer.length : '없음',
+    '메타픽셀': !!window.fbq,
+    '카카오SDK': !!window.Kakao,
+    '리뷰앱': has('crema') ? 'CREMA' : has('reviewmoa') ? '리뷰모아' : has('snapreview') ? '스냅리뷰' : has('judge.me') ? 'Judge.me' : '미확인',
+    'jQuery': window.jQuery ? jQuery.fn.jquery : '없음',
+    '이미지 총개수': imgs.length,
+    '세로1500px초과 이미지': big.length,
+    'lazy 적용 이미지': lazy.length + '/' + imgs.length,
+    '이미지 전송량(KB)': Math.round(imgBytes / 1024),
+    'DOM 로드(ms)': Math.round(nav.domContentLoadedEventEnd || 0),
+    '전체 로드(ms)': Math.round(nav.loadEventEnd || 0),
+    'WebP/AVIF 사용': res.some(r => /\.(webp|avif)/.test(r.name)),
+    '상세영역 후보': ['#prdDetail','#detail','.detail_page','.xans-product-detail','[data-detail]','.product__description']
+        .filter(s => document.querySelector(s)).join(' | ') || '수동확인필요'
   };
-  document.getElementById('vl-no').onclick = function () {
-    localStorage.setItem(KEY, 'ko');
-    el.remove();
-  };
+  console.table(out);
+
+  new PerformanceObserver(l => {
+    const e = l.getEntries().pop();
+    console.log('%cLCP(ms):', 'color:#c00;font-weight:bold', Math.round(e.startTime), e.element);
+  }).observe({ type: 'largest-contentful-paint', buffered: true });
 })();
 ```
 
-**`price-jpy.js`** — 엔화 가격 라운딩 규칙 (환율 변동 시 가격 재계산 자동화)
+### 0.2 터미널 1줄 (서버 응답/캐시 확인)
 
-```js
-/* KRW → JPY 소비자가 산출. 환율 리스크 버퍼 + 일본 EC 관행(끝자리 800/900) 반영 */
-export function toJpyPrice(krw, { fx = 0.107, buffer = 1.12, ddpRate = 0.13 } = {}) {
-  // fx: 100원당 엔 환산율(예: 1 KRW = 0.107 JPY) → 운영 시 주 1회 갱신
-  // buffer: 환변동+PG수수료+결제취소 리스크 12%
-  // ddpRate: 관세+소비세 선반영률(가죽가방 기준, §1-5 참조)
-  const raw = krw * fx * buffer * (1 + ddpRate);
-  const base = Math.ceil(raw / 100) * 100;          // 100엔 단위 절상
-  return base - 100 + 80;                            // 끝자리 80엔(예: 12,880) — 일본 관행
-}
-// 예: 129,000원 → toJpyPrice(129000) ≈ ¥18,780
+```bash
+curl -sI -A "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)" https://valluat.com/ \
+  | egrep -i 'server|x-powered|cache-control|content-encoding|cf-|via'
 ```
 
-## 1-4. 엔화 결제수단 요건 (핵심 병목)
+### 0.3 판별 결과 기입표 (**개발 담당자가 오늘 채운다**)
 
-**필수 탑재 우선순위**
-
-| 순위 | 수단 | 왜 필요한가 | 미탑재 시 리스크 |
-|---|---|---|---|
-| 1 | **크레딧카드(JCB 필수 포함)** | 일본 EC 결제의 과반. JCB는 일본 발행 카드 상당 비중, VISA/Master만 붙이면 결제 실패·이탈 | 결제 시도 이탈 대량 발생 |
-| 2 | **PayPay** | 일본 QR결제 1위, 20~30대 여성 침투율 높음(타깃 일치) | 젊은 층 전환 손실 |
-| 3 | **콤비니 결제** | 카드 미보유/카드 노출 기피층. 편의점 선불 → 미성년·학생 포함 | 특정 세그먼트 통째로 이탈 |
-| 4 | **Paidy / NP後払い (후불)** | 고단가(2~4만엔) 가방에서 심리적 장벽 완화 | AOV 상승 기회 손실 |
-| 5 | Amazon Pay / 라쿠텐페이 | 주소 자동입력 → 폼 이탈 감소 | 2단계 과제 |
-
-**PSP 후보 비교 (한국 법인 상태 기준)**
-
-| PSP | 한국 법인 계약 | JCB | PayPay | 콤비니 | Paidy | 정산 | 예상 요율 | 판정 |
-|---|---|---|---|---|---|---|---|---|
-| **KOMOJU (Degica)** | ○ 해외 사업자 지원 | ○ | ○ | ○ | ○ | JPY→해외송금 | ~3.6%+α ⚠️견적필요 | **1순위** |
-| **Eximbay** | ◎ 국내 PG | ○ | ○(확인) | △ | ✕ | KRW | ~3.5~4.5% ⚠️ | **백업/병행** |
-| PayPal | ◎ | △ | ✕ | ✕ | ✕ | USD | ~4.4%+ | 단독 불가 |
-| Stripe JP / GMO / SBPS | **✕ 일본 법인 필수** | ○ | ○ | ○ | ○ | JPY | 3.25%~ | **2단계(법인 설립 후)** |
-| Shopify Payments | **✕ 한국 미지원** | - | - | - | - | - | - | 사용 불가 |
-
-> **개발팀 판단**: `KOMOJU(주) + Eximbay(백업 카드)` 이중화. Shopify로 갈 경우 KOMOJU 공식 앱이 있어 개발 공수 최소(2~3일). 자체 솔루션이면 KOMOJU Hosted Page 연동 5~8일.
-
-**체크아웃 UI 요건 (전환율 직결 — 반드시 명세에 포함)**
-
-```
-[ ] 결제수단 아이콘을 상품 상세·장바구니에도 노출 (JCB/PayPay/コンビニ 로고)
-[ ] 일본 주소 폼: 郵便番号(7자리) 입력 시 도도부현·시구정촌 자동완성 (필수)
-    → zipcloud API 또는 KEN_ALL 기반. 주소 입력 이탈의 최대 원인
-[ ] 성/이름 분리 입력 + フリガナ(카타카나) 필드 (일본 배송 표준)
-[ ] 전화번호 형식 검증: 0X0-XXXX-XXXX
-[ ] 가격 표기: 総額表示(세금 포함) 원칙 + "関税・消費税込み(DDP)" 명시
-[ ] 배송 예정일 명시: "ご注文から4〜7営業日でお届け"
-[ ] 게스트 체크아웃 허용 (회원가입 강제 금지)
-```
-
-**우편번호 자동완성 스니펫**
-
-```js
-// 郵便番号 → 住所 자동입력 (zipcloud, 무료/키 불필요) ⚠️ SLA 없음. 트래픽 커지면 자체 KEN_ALL DB로 교체
-document.querySelector('#zip').addEventListener('blur', async (e) => {
-  const zip = e.target.value.replace(/[^0-9]/g, '');
-  if (zip.length !== 7) return;
-  const r = await fetch(`https://zipcloud.ibsnet.co.jp/api/search?zipcode=${zip}`).then(r => r.json());
-  const a = r.results && r.results[0];
-  if (!a) return;
-  document.querySelector('#pref').value = a.address1;                 // 都道府県
-  document.querySelector('#city').value = a.address2 + a.address3;    // 市区町村・町域
-  document.querySelector('#addr1').focus();
-});
-```
-
-## 1-5. 해외배송 · 관세 요건 ★손익 최대 변수
-
-**⚠️ 가장 중요한 발견 — 담당자에게 반드시 전달**
-일본의 소액수입 면세(과세가격 1만엔 이하) 제도에는 **혁제(가죽) 가방·신발 등 제외 품목**이 있고, 가죽 핸드백은 관세율도 높은 품목군입니다. 즉 **벨류엣 상품은 저단가여도 면세 혜택을 기대할 수 없습니다.**
-→ **DUTY 미포함(DDU) 배송 시 고객이 수령 시점에 세금 청구를 받고 수취거부·클레임이 폭증**합니다. **DDP(관세·소비세 판매자 선부담, 가격에 반영) 정책이 사실상 필수.**
-
-| 항목 | 요건 | 담당/확인처 |
+| 항목 | 값 | 확정 시각 |
 |---|---|---|
-| HS 코드 확정 | 4202.21(가죽), 4202.22(합성/직물), 4202.31 등 소재별 분류 | 관세사 ⚠️필수 |
-| 관세율 | 소재·원산지별 상이. **한국산이면 RCEP 협정세율 적용 가능성** → 원산지증명(자율발급)으로 세율 인하 검토 | 관세사 |
-| 원산지 | **국내생산 / 중국생산 SKU를 분리 관리**해야 세율·증빙이 갈림 | 생산팀+개발(상품 필드) |
-| 소비세 10% | 수입 시 과세. DDP면 판매가에 선반영 | 재무 |
-| JCT 등록 | **직배송(개인수입) 방식이면 원칙적으로 불요**. 일본 현지 재고/3PL 보유 시 과세사업자 등록 필요 | 세무 ⚠️ |
+| 커머스 스택 | ( ) | |
+| GTM 컨테이너 ID | ( ) | |
+| GA4 측정 ID | ( ) | |
+| 상세영역 셀렉터 | ( ) | |
+| 리뷰 솔루션 | ( ) | |
+| 모바일 LCP / 이미지 전송량 | ( )ms / ( )KB | |
 
-**배송 옵션 매트릭스**
+### 0.4 판별 결과별 "붙이는 위치"만 달라진다 (그 외 전부 동일)
 
-| 방식 | 리드타임 | 비용대 | DDP | 반품 | 적용 단계 |
+| 스택 | 공통 스크립트 삽입 위치 | 배포 방식 |
+|---|---|---|
+| Cafe24 | 쇼핑몰 설정 → 디자인 → HTML 소스(공통 레이아웃 `</head>` 직전) 또는 스마트배너/외부스크립트 | 스킨 복사본에서 작업 → 미리보기 → 적용 |
+| Shopify | `theme.liquid` `</head>` 직전 (테마 복제본) | 테마 복제 → 미리보기 URL QA → 게시 |
+| Makeshop/Godo | 디자인 관리 → 공통 HEAD | 백업 후 저장 |
+| 자체/기타 | 프론트 레이아웃 템플릿 `</head>` | Git PR |
+
+> **원칙: 모든 개선 코드는 GTM 컨테이너 1개로 배포한다.** 스택 관리자 화면에는 **GTM 스니펫만** 넣고, DEV-1~3 코드는 GTM 태그로 관리 → 개발자 없이 즉시 롤백 가능(9월 트래픽 급증 구간에서 이게 가장 중요).
+> GTM이 없다면(§0.3에서 미설치로 나오면) **오늘 최우선 작업 = GTM 설치**로 순서를 바꾼다.
+
+---
+
+## 1. 우선순위 확정
+
+| 순위 | 작업 | 왜 이 순서인가 | 배포일 |
+|---|---|---|---|
+| **P0** | 퍼널 계측 세팅 (§3) | 안 하면 나머지 3건의 효과를 9월에 판단 불가. 광고비 10억 트랜치 게이트의 근거 데이터 | **8/18 가동** |
+| **P1** | DEV-1 모바일 로딩 최적화 | 전 상품·전 트래픽에 적용, 리스크 최저, CPM 상승기에 LCP 1초 = 이탈 직결 | **8/18(마리백)→8/20(전체)** |
+| **P2** | DEV-3 스티키 구매바 + 옵션 마찰 제거 | PDP→장바구니 전환의 최대 누수 지점. 구현 난이도 대비 효과 최대 | **8/25** |
+| **P3** | DEV-2 퍼스트뷰 전환 블록(셀럽컷·실착·리뷰) | 브랜드 자산(셀럽 300명)을 첫 화면에서 쓰는 구조 변경. QA 범위가 넓어 후순위 | **8/27** |
+| **P4** | 카카오채널·회원 전환 흐름 (§4) | 재구매 자산화. 9월 트래픽이 들어오기 전 반드시 켜져 있어야 함 | **8/29** |
+| — | **코드 프리즈** | 9월 성수기 중 무배포 원칙 (긴급 롤백만 허용) | **8/31 18:00** |
+
+---
+
+## 2. 제작물 A — 마리백 PDP 전환 개선 3건
+
+### 2.0 진단 (전형적 국내 여성 패션 PDP 패턴 기준 + Step 0 실측으로 확정)
+
+| 진단 항목 | 흔한 현상 | 전환 손실 가설 | 대응 |
+|---|---|---|---|
+| 모바일 로딩 | 상세 이미지 20~40장, 장당 1~3MB, 전부 즉시 로드 | LCP 4초↑ → 광고 유입 이탈 20~30% (모바일 3초 초과 시 이탈 급증) | DEV-1 |
+| 셀럽 착용컷 | 상세 중하단에 배치, 스크롤 5,000px 아래 | 브랜드 최대 자산이 첫 화면에서 안 보임 | DEV-2 |
+| 사이즈·실착 | 이미지 안에 텍스트로만 존재 → 검색·복사 불가, 모델 키/소지품 정보 부재 | "얼마나 들어가나?" 미해소 → 이탈 or CS 문의 | DEV-2 |
+| 리뷰 | 상세 최하단, 평점 요약 없음 | "가격 대비 퀄리티" 라는 최강 소셜프루프가 구매 결정 시점에 안 보임 | DEV-2 |
+| 구매 버튼 | 스크롤 내리면 화면 밖으로 사라짐, 옵션 미선택 시 무반응 | 구매 의향 최고점(리뷰/셀럽컷 본 직후)에 버튼 없음 | DEV-3 |
+
+---
+
+### 2.1 DEV-1 — 모바일 상세 로딩 최적화 (배포 8/18)
+
+**변경 전**: 상세 이미지 전량 즉시 로드, `width/height` 미지정(레이아웃 시프트), 원본 JPG.
+**변경 후**: 첫 화면 이미지 1장만 우선 로드 + 나머지 지연 로드 + 상세 접기("상세정보 더보기") + 사이즈 속성 강제.
+
+`gtm/tag-dev1-lazy.html` (GTM → 맞춤 HTML 태그, 트리거: All Pages / PDP만)
+
+```html
+<script>
+(function () {
+  if (!/\/product\//.test(location.pathname) && !document.querySelector('#prdDetail,.xans-product-detail,.product__description')) return;
+
+  var DETAIL = document.querySelector('#prdDetail, .xans-product-detail, .detail_page, .product__description, [data-detail]');
+  if (!DETAIL) return;
+
+  /* 1) 상세 이미지 지연 로드 + CLS 방지 */
+  var imgs = DETAIL.querySelectorAll('img');
+  Array.prototype.forEach.call(imgs, function (img, i) {
+    if (i > 0) { img.loading = 'lazy'; img.decoding = 'async'; }
+    else { img.setAttribute('fetchpriority', 'high'); }
+    if (!img.getAttribute('width') && img.naturalWidth) {
+      img.setAttribute('width', img.naturalWidth);
+      img.setAttribute('height', img.naturalHeight);
+    }
+    img.style.maxWidth = '100%'; img.style.height = 'auto';
+  });
+
+  /* 2) 상세 접기 — 모바일에서 초기 렌더 높이를 2,000px로 제한 */
+  if (window.innerWidth <= 820 && DETAIL.scrollHeight > 3000) {
+    var FOLD = 2000;
+    DETAIL.style.cssText += 'max-height:' + FOLD + 'px;overflow:hidden;position:relative;';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'vl-more';
+    btn.innerHTML = '상세정보 더보기 <span>▾</span>';
+    btn.style.cssText = 'display:block;width:calc(100% - 32px);margin:-52px 16px 24px;position:relative;z-index:5;' +
+      'padding:14px 0;background:#fff;border:1px solid #111;border-radius:2px;font-size:14px;letter-spacing:.02em;cursor:pointer;';
+    var fade = document.createElement('div');
+    fade.style.cssText = 'position:relative;height:80px;margin-top:-80px;z-index:4;' +
+      'background:linear-gradient(rgba(255,255,255,0),#fff);';
+    DETAIL.parentNode.insertBefore(fade, DETAIL.nextSibling);
+    DETAIL.parentNode.insertBefore(btn, fade.nextSibling);
+    btn.addEventListener('click', function () {
+      DETAIL.style.maxHeight = 'none';
+      btn.remove(); fade.remove();
+      window.dataLayer.push({ event: 'vl_detail_expand' });
+    });
+  }
+
+  /* 3) 이미지 리소스 힌트 */
+  var hero = document.querySelector('.xans-product-image img, .product__media img, .thumb img');
+  if (hero && hero.src) {
+    var l = document.createElement('link');
+    l.rel = 'preload'; l.as = 'image'; l.href = hero.src; l.setAttribute('fetchpriority','high');
+    document.head.appendChild(l);
+  }
+})();
+</script>
+```
+
+**병행(디자인/운영팀 작업, 8/13~8/15)**
+- 마리백 상세 이미지 원본을 **WebP(품질 80), 가로 1080px, 세로 2000px 단위로 분할** 재업로드 → 목표: 상세 총 전송량 **8MB → 2.5MB 이하**
+- 상세 상단 3장 안에 "사이즈·실착·소재" 정보가 텍스트로도 들어가게(§2.2 스펙카드와 중복 허용)
+
+**성공 기준**: 모바일 LCP **4.0s → 2.5s 이하**, 상세 전송량 60%↓, PDP 이탈률 −5%p.
+
+---
+
+### 2.2 DEV-2 — 퍼스트뷰 전환 블록 (셀럽컷 + 실착 스펙 + 리뷰 요약) (배포 8/27)
+
+**변경 전**: 상품 이미지 → 가격 → 옵션 → (5,000px 아래) 셀럽컷/리뷰
+**변경 후**: 옵션 바로 위에 **① 셀럽 착용 배지+캐러셀 ② 실착 스펙 카드 ③ 리뷰 평점 요약** 3단 블록 삽입 (첫 스크롤 1.5회 이내)
+
+`gtm/tag-dev2-firstview.html`
+
+```html
+<style>
+.vl-fv{margin:20px 0 8px;font-family:inherit;-webkit-font-smoothing:antialiased}
+.vl-fv *{box-sizing:border-box}
+.vl-celeb-h{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13px;letter-spacing:.01em;color:#111}
+.vl-celeb-h b{font-weight:600}
+.vl-badge{background:#111;color:#fff;font-size:11px;padding:3px 7px;border-radius:2px;letter-spacing:.03em}
+.vl-celeb{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;padding-bottom:6px}
+.vl-celeb::-webkit-scrollbar{display:none}
+.vl-celeb figure{flex:0 0 108px;scroll-snap-align:start;margin:0}
+.vl-celeb img{width:108px;height:144px;object-fit:cover;border-radius:2px;display:block;background:#f3f3f3}
+.vl-celeb figcaption{font-size:11px;color:#666;margin-top:5px;text-align:center;letter-spacing:0}
+.vl-spec{margin:16px 0 0;border:1px solid #e9e9e9;border-radius:3px;padding:14px 14px 10px}
+.vl-spec dl{display:grid;grid-template-columns:76px 1fr;gap:7px 10px;margin:0;font-size:13px;line-height:1.45}
+.vl-spec dt{color:#8a8a8a}
+.vl-spec dd{margin:0;color:#111}
+.vl-spec .vl-fit{margin:12px 0 0;padding-top:11px;border-top:1px solid #f0f0f0;font-size:12.5px;color:#444;line-height:1.5}
+.vl-spec .vl-fit b{color:#111;font-weight:600}
+.vl-rev{margin:12px 0 0;display:flex;align-items:center;gap:10px;padding:12px 14px;background:#fafafa;border-radius:3px;cursor:pointer}
+.vl-rev .st{font-size:14px;letter-spacing:1px;color:#111}
+.vl-rev .sc{font-size:14px;font-weight:600}
+.vl-rev .cnt{font-size:12px;color:#777;margin-left:auto;text-decoration:underline}
+.vl-rev .kw{font-size:12px;color:#555}
+@media(min-width:821px){.vl-celeb figure{flex:0 0 132px}.vl-celeb img{width:132px;height:176px}}
+</style>
+
+<script>
+(function () {
+  /* ===== 운영팀이 관리하는 데이터 (마리백) ===== */
+  var DATA = {
+    productKeys: ['mari', '마리'],                 // URL/타이틀에 이 문자열 포함 시 적용
+    celebCount: 300,
+    celebs: [
+      { name: '기은세',  img: 'https://valluat.com/web/upload/celeb/mari_kes.webp' },
+      { name: '김고은',  img: 'https://valluat.com/web/upload/celeb/mari_kge.webp' },
+      { name: '정채연',  img: 'https://valluat.com/web/upload/celeb/mari_jcy.webp' },
+      { name: '크리스탈', img: 'https://valluat.com/web/upload/celeb/mari_krs.webp' }
+    ],
+    spec: {
+      '사이즈': 'W 24 × H 16 × D 9 cm (스트랩 최대 118cm)',
+      '무게': '390g',
+      '소재': '소가죽 (내부 스웨이드)',
+      '수납': '스마트폰 · 반지갑 · 립 · 카드 · 키',
+      '착장': '숄더 / 크로스 / 토트 3way'
+    },
+    fit: '모델 <b>163cm</b> 착용컷 기준. A4는 들어가지 않으며 <b>15인치 노트북 불가</b>, 소개팅·하객룩에 맞춘 미니 사이즈입니다.',
+    review: { score: 4.8, count: 12480, keywords: '가격 대비 퀄리티 · 하객룩 · 생각보다 넉넉해요' }
+  };
+  /* ============================================ */
+
+  var url = (location.pathname + location.search + document.title).toLowerCase();
+  if (!DATA.productKeys.some(function (k) { return url.indexOf(k) > -1; })) return;
+
+  var anchor = document.querySelector('.xans-product-option, .product-form__buttons, [data-option-area], .prd-option, #totalProducts');
+  if (!anchor) return;
+  if (document.querySelector('.vl-fv')) return;
+
+  var wrap = document.createElement('div');
+  wrap.className = 'vl-fv';
+  wrap.innerHTML =
+    '<div class="vl-celeb-h"><span class="vl-badge">CELEB</span>' +
+      '<b>누적 ' + DATA.celebCount + '인+</b> 연예인 착용</div>' +
+    '<div class="vl-celeb">' +
+      DATA.celebs.map(function (c) {
+        return '<figure><img src="' + c.img + '" alt="' + c.name + ' 착용" loading="lazy" decoding="async" width="108" height="144"><figcaption>' + c.name + '</figcaption></figure>';
+      }).join('') +
+    '</div>' +
+    '<div class="vl-spec"><dl>' +
+      Object.keys(DATA.spec).map(function (k) { return '<dt>' + k + '</dt><dd>' + DATA.spec[k] + '</dd>'; }).join('') +
+    '</dl><p class="vl-fit">' + DATA.fit + '</p></div>' +
+    '<div class="vl-rev" id="vlRev">' +
+      '<span class="st">★★★★★</span><span class="sc">' + DATA.review.score.toFixed(1) + '</span>' +
+      '<span class="kw">' + DATA.review.keywords + '</span>' +
+      '<span class="cnt">리뷰 ' + DATA.review.count.toLocaleString() + '개</span>' +
+    '</div>';
+
+  anchor.parentNode.insertBefore(wrap, anchor);
+
+  /* 리뷰 요약 클릭 → 리뷰 영역으로 스크롤 */
+  document.getElementById('vlRev').addEventListener('click', function () {
+    var r = document.querySelector('#prdReview, .xans-product-review, #crema-reviews, [data-review-area]');
+    if (r) r.scrollIntoView({ behavior: 'smooth' });
+    window.dataLayer.push({ event: 'vl_review_summary_click' });
+  });
+
+  /* 셀럽 캐러셀 스와이프 계측 */
+  var c = wrap.querySelector('.vl-celeb'), fired = false;
+  c.addEventListener('scroll', function () {
+    if (!fired) { fired = true; window.dataLayer.push({ event: 'vl_celeb_swipe' }); }
+  }, { passive: true });
+
+  /* 블록 노출 계측 */
+  new IntersectionObserver(function (e, o) {
+    if (e[0].isIntersecting) { window.dataLayer.push({ event: 'vl_firstview_view' }); o.disconnect(); }
+  }, { threshold: 0.4 }).observe(wrap);
+})();
+</script>
+```
+
+> 운영 담당: `DATA` 객체만 수정하면 상품별 확장 가능. 셀럽 이미지는 **초상권 사용 범위 확인된 컷만** 사용(마케팅팀 확인 후 반영).
+
+**성공 기준**: PDP → `add_to_cart` 전환율 **+8% 이상**(A/B 기준), 리뷰 영역 도달률 +15%p.
+
+---
+
+### 2.3 DEV-3 — 스티키 구매바 + 옵션 마찰 제거 (배포 8/25)
+
+**변경 전**: 스크롤 시 구매 버튼 소실, 옵션 미선택 상태로 버튼 누르면 alert 또는 무반응 → 이탈.
+**변경 후**: 화면 하단 고정 구매바(가격+장바구니+바로구매) 상시 노출, 옵션 미선택 시 **옵션 영역으로 스크롤 + 하이라이트**, 무료배송/오늘출발 넛지 표기.
+
+`gtm/tag-dev3-stickybar.html`
+
+```html
+<style>
+.vl-sticky{position:fixed;left:0;right:0;bottom:0;z-index:9990;background:#fff;
+  border-top:1px solid #ececec;padding:9px 12px calc(9px + env(safe-area-inset-bottom));
+  display:flex;align-items:center;gap:8px;transform:translateY(110%);transition:transform .22s ease;
+  box-shadow:0 -2px 14px rgba(0,0,0,.06)}
+.vl-sticky.on{transform:none}
+.vl-sticky .p{flex:1;min-width:0;line-height:1.25}
+.vl-sticky .p .nm{font-size:11.5px;color:#888;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vl-sticky .p .pr{font-size:15px;font-weight:700;color:#111}
+.vl-sticky .p .dl{font-size:11px;color:#c0392b;margin-left:5px;font-weight:500}
+.vl-sticky button{border:0;border-radius:2px;font-size:14px;font-weight:600;padding:13px 0;cursor:pointer;letter-spacing:.01em}
+.vl-sticky .cart{width:88px;background:#f2f2f2;color:#111}
+.vl-sticky .buy{width:118px;background:#111;color:#fff}
+.vl-optflash{animation:vlFlash 1.1s ease 2;border-radius:3px}
+@keyframes vlFlash{0%,100%{box-shadow:0 0 0 0 rgba(17,17,17,0)}50%{box-shadow:0 0 0 3px rgba(17,17,17,.18)}}
+@media(min-width:821px){.vl-sticky{display:none}}
+</style>
+
+<script>
+(function () {
+  var OPT  = document.querySelector('.xans-product-option, [data-option-area], .prd-option, .product-form__variants');
+  var CART = document.querySelector('a[href*="basket"], .btnBasket, [name="basket"], button[name="add"], #btnBasket');
+  var BUY  = document.querySelector('.btnBuy, [name="order"], a[href*="order"], #btnBuy');
+  if (!CART) return;
+  if (document.querySelector('.vl-sticky')) return;
+
+  var nameEl  = document.querySelector('.xans-product-detail h2, .product__title, [data-prd-name], h1');
+  var priceEl = document.querySelector('#span_product_price_text, .product__price, [data-prd-price], .price');
+  var prdName = nameEl ? nameEl.textContent.trim().slice(0, 28) : '상품';
+  var prdPrice = priceEl ? priceEl.textContent.trim() : '';
+
+  /* 배송 컷오프 넛지: 평일 14시 이전이면 오늘출발 */
+  var now = new Date(), d = now.getDay(), h = now.getHours();
+  var ship = (d >= 1 && d <= 5 && h < 14) ? '오늘 출발 마감 ' + (13 - h) + '시간 ' + (60 - now.getMinutes()) + '분' : '무료배송';
+
+  var bar = document.createElement('div');
+  bar.className = 'vl-sticky';
+  bar.innerHTML =
+    '<div class="p"><span class="nm">' + prdName + '</span>' +
+    '<span class="pr">' + prdPrice + '</span><span class="dl">' + ship + '</span></div>' +
+    '<button type="button" class="cart">장바구니</button>' +
+    '<button type="button" class="buy">바로구매</button>';
+  document.body.appendChild(bar);
+  document.body.style.paddingBottom = '72px';
+
+  /* 옵션 선택 여부 판정 */
+  function optionSelected() {
+    if (!OPT) return true;
+    var sels = OPT.querySelectorAll('select');
+    if (sels.length) {
+      return Array.prototype.every.call(sels, function (s) { return s.selectedIndex > 0 && s.value && s.value !== '*' && s.value !== '**'; });
+    }
+    return !!OPT.querySelector('input:checked, .selected, [aria-selected="true"]') ||
+           !!document.querySelector('.xans-product-addquantity li, .product-option-list li');
+  }
+  function nudgeOption() {
+    if (!OPT) return;
+    OPT.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    OPT.classList.add('vl-optflash');
+    setTimeout(function () { OPT.classList.remove('vl-optflash'); }, 2400);
+    window.dataLayer.push({ event: 'vl_option_required' });   // ★ 옵션 미선택 이탈 추적
+  }
+
+  function act(kind, orig) {
+    return function () {
+      window.dataLayer.push({ event: 'vl_sticky_click', vl_action: kind });
+      if (!optionSelected()) { nudgeOption(); return; }
+      if (orig) { orig.click(); }
+    };
+  }
+  bar.querySelector('.cart').addEventListener('click', act('cart', CART));
+  bar.querySelector('.buy').addEventListener('click', act('buy', BUY || CART));
+
+  /* 400px 이상 스크롤 시 노출 */
+  var shown = false;
+  window.addEventListener('scroll', function () {
+    var on = window.scrollY > 400;
+    if (on !== bar.classList.contains('on')) bar.classList.toggle('on', on);
+    if (on && !shown) { shown = true; window.dataLayer.push({ event: 'vl_sticky_view' }); }
+  }, { passive: true });
+
+  /* 원본 버튼에서도 옵션 미선택 감지 */
+  if (OPT) {
+    document.addEventListener('click', function (e) {
+      var t = e.target.closest('a[href*="basket"], .btnBasket, [name="basket"], .btnBuy, [name="order"]');
+      if (t && !optionSelected()) { window.dataLayer.push({ event: 'vl_option_required', vl_src: 'origin_btn' }); }
+    }, true);
+  }
+})();
+</script>
+```
+
+**성공 기준**: `add_to_cart` 발생률 **+10%**, `vl_option_required` 이벤트가 세션의 8% 초과 시 → 옵션 UI 자체를 9월 후 재설계 대상으로 등록.
+
+---
+
+## 3. 제작물 B — 단계별 이탈률 측정 세팅 (P0, 8/18 가동)
+
+### 3.1 퍼널 정의 (매일 아침 이 6줄만 보면 어디서 새는지 보인다)
+
+| # | 단계 | 이벤트 | 정의 | 8월 기준선 | 9월 경보선 |
 |---|---|---|---|---|---|
-| EMS / K-Packet (우체국) | 3~6일 | 저 | △ | 어려움 | **1단계 기본** |
-| DHL / FedEx Express | 2~3일 | 고 | ○(DDP 기능 표준) | 가능 | 1단계 프리미엄/고단가 |
-| 국내 포워더 통합배송(합포장 통관) | 4~7일 | 중 | ○ | 중 | 물량 증가 시 |
-| 일본 현지 3PL 선적 후 야마토/사가와 | **1~2일** | 중(초기투자 큼) | 불필요(국내거래) | **용이** | **2~3단계** |
+| 1 | 광고 유입 | `session_start` (source=meta) | 랜딩 진입 세션 | 기입 | — |
+| 2 | 랜딩 유효 | `vl_engaged` | 10초 체류 or 25% 스크롤 | 기입 | 전일 대비 −10%p |
+| 3 | 상품 조회 | `view_item` | PDP 진입 | 기입 | −10%p |
+| 4 | 구매의향 | `vl_firstview_view` / `vl_sticky_view` | 전환블록·구매바 노출 | 기입 | — |
+| 5 | 장바구니 | `add_to_cart` | | 기입 | **−15% 시 즉시 확인** |
+| 6 | 결제시작 | `begin_checkout` | | 기입 | −15% |
+| 7 | 구매 | `purchase` | | 기입 | −15% |
 
-**배송비 정책안 (전환율 기준으로 설계)**
+**추가 진단 이벤트**: `vl_option_required`(옵션 마찰), `vl_detail_expand`(상세 더보기), `vl_review_summary_click`, `vl_celeb_swipe`, `vl_kakao_add`, `vl_signup_click`, `vl_lcp`(성능).
 
+### 3.2 공통 계측 태그 `gtm/tag-funnel-core.html`
+
+```html
+<script>
+(function () {
+  window.dataLayer = window.dataLayer || [];
+  var dl = window.dataLayer;
+
+  /* A. 유효 세션(랜딩 이탈 분리) */
+  var engaged = false;
+  function fireEngaged(reason) {
+    if (engaged) return; engaged = true;
+    dl.push({ event: 'vl_engaged', vl_reason: reason, vl_page: location.pathname });
+  }
+  setTimeout(function () { fireEngaged('10s'); }, 10000);
+  window.addEventListener('scroll', function () {
+    if ((window.scrollY + innerHeight) / document.body.scrollHeight > 0.25) fireEngaged('scroll25');
+  }, { passive: true });
+
+  /* B. 성능(LCP) — 어느 디바이스/네트워크에서 느린지 매일 확인 */
+  try {
+    new PerformanceObserver(function (l) {
+      var e = l.getEntries().pop();
+      dl.push({
+        event: 'vl_lcp',
+        vl_lcp_ms: Math.round(e.startTime),
+        vl_bucket: e.startTime < 2500 ? 'good' : e.startTime < 4000 ? 'ni' : 'poor',
+        vl_conn: (navigator.connection && navigator.connection.effectiveType) || 'na'
+      });
+    }).observe({ type: 'largest-contentful-paint', buffered: true });
+  } catch (e) {}
+
+  /* C. 이탈 지점 기록 (마지막 본 섹션) */
+  window.addEventListener('pagehide', function () {
+    dl.push({ event: 'vl_exit', vl_depth: Math.round((window.scrollY + innerHeight) / document.body.scrollHeight * 100) });
+  });
+})();
+</script>
 ```
-¥20,000 이상 구매 → 送料無料 (AOV 상향 유도, 가방 단가 고려 시 대부분 해당)
-¥20,000 미만     → 一律 ¥1,200
-반품: 상품 도착 후 7일 이내, 반품 배송비 고객 부담(¥3,000 정액) — 特商法 표기 필수
-초기 불량/오배송: 전액 당사 부담
-※ 반품 물류비가 크므로 "상세 사이즈·실측 컷·착용 컷"으로 반품률 선제 억제 (디자인팀 협업)
+
+### 3.3 GA4 이커머스 데이터레이어 (스택 무관 — 페이지 유형별 push)
+
+```html
+<!-- PDP: 상품 상세에 삽입 (스택 변수는 §0.3 결과에 맞춰 치환) -->
+<script>
+window.dataLayer = window.dataLayer || [];
+dataLayer.push({ ecommerce: null });
+dataLayer.push({
+  event: 'view_item',
+  ecommerce: {
+    currency: 'KRW',
+    value: {{상품가격}},
+    items: [{ item_id: '{{상품코드}}', item_name: '{{상품명}}', price: {{상품가격}}, quantity: 1 }]
+  }
+});
+</script>
+
+<!-- 주문완료 페이지 -->
+<script>
+dataLayer.push({ ecommerce: null });
+dataLayer.push({
+  event: 'purchase',
+  vl_is_member: '{{회원여부:member|guest}}',
+  vl_is_first: '{{첫구매여부:1|0}}',
+  ecommerce: {
+    transaction_id: '{{주문번호}}',
+    value: {{결제금액}}, currency: 'KRW', shipping: {{배송비}},
+    items: [{ item_id: '{{상품코드}}', item_name: '{{상품명}}', price: {{상품가격}}, quantity: {{수량}} }]
+  }
+});
+</script>
 ```
 
-## 1-6. 상품 데이터 일본어 필드 — 난이도 판정 **중(中)**
+> `add_to_cart` / `begin_checkout`이 스택에서 직접 push 불가하면, **DEV-3 스티키바 클릭 + 장바구니/주문서 페이지뷰**로 대체 정의(정의만 문서에 고정하면 추세 판단에는 충분).
 
-**난이도 결론**: 필드 추가 자체는 쉬움(솔루션 다국어 필드 or 커스텀 컬럼). **진짜 비용은 번역 품질·SEO 키워드 매핑·운영 프로세스**에 있음. 신규 상품 등록 플로우에 일본어 입력 단계를 넣지 않으면 3개월 내 반드시 무너집니다.
+### 3.4 대시보드 항목 정의 (Looker Studio, `dash/funnel-daily`)
 
-**`ja_product_fields.csv` 컬럼 스펙 (MD팀/외주 번역가 배포용)**
-
-| 컬럼 | 필수 | 설명 | 예시 |
-|---|---|---|---|
-| `sku` | ● | 기존 SKU (조인 키) | VL-2601-BK |
-| `handle` | ● | URL 슬러그(언어 공통, 영문) | mini-tote-lena |
-| `name_ja` | ● | 상품명. **일본 검색 키워드 포함** | レナ ミニトートバッグ |
-| `subtitle_ja` | ○ | 한 줄 소구 | お呼ばれ・デートに |
-| `desc_ja` | ● | 상세 설명(HTML 허용) | — |
-| `material_ja` | ● | 素材 (관세 분류와 연동) | 牛革 / 合成皮革 |
-| `size_ja` | ● | W○○ × H○○ × D○○ cm 표기 | W24×H18×D9cm |
-| `weight_g` | ● | 배송비·통관용 실중량 | 520 |
-| `color_ja` | ● | ブラック / アイボリー 등 | ブラック |
-| `care_ja` | ○ | お手入れ方法 | — |
-| `price_jpy` | ● | §1-3 라운딩 규칙 적용가 | 18780 |
-| `hs_code` | ● | 관세 분류 | 4202.21 |
-| `origin_country` | ● | KR / CN (RCEP 판단) | KR |
-| `keywords_ja` | ● | JP SEO 키워드(콤마) | 結婚式 バッグ,お呼ばれ,二次会 |
-| `celeb_ja` | ○ | 셀럽 착용 표기(브랜드 자산) | ○○さん着用 |
-
-**JP 키워드 매핑 표 (브랜드 포지셔닝 직역 금지 — 마케팅팀 공유용)**
-
-| 한국어 컨셉 | ❌ 직역 | ✅ 일본 실검색어 |
+**상단 스코어카드(전일 vs 7일평균)**
+| 지표 | 산식 | 소스 |
 |---|---|---|
-| 하객룩 가방 | ゲストルックバッグ | **結婚式 バッグ / お呼ばれバッグ / 二次会 バッグ** |
-| 소개팅룩 | お見合いルック | **デートコーデ / モテ服** |
-| 출근룩 | 出勤ルック | **オフィスカジュアル / 通勤バッグ** |
-| 데일리백 | デイリーバッグ | **普段使い バッグ** |
-| 미니백 | ミニバッグ | **ミニバッグ / スマホショルダー** |
+| 세션 | GA4 sessions | GA4 |
+| 유효세션률 | vl_engaged / sessions | GA4 |
+| PDP 조회율 | view_item 세션 / sessions | GA4 |
+| **장바구니 전환율** | add_to_cart 세션 / view_item 세션 | GA4 |
+| **결제시작률** | begin_checkout / add_to_cart | GA4 |
+| **결제완료율** | purchase / begin_checkout | GA4 |
+| 전체 CVR | purchase 세션 / sessions | GA4 |
+| AOV / 매출 | value 합 / purchase | GA4 |
+| 모바일 LCP p75 | vl_lcp p75 | GA4 |
+| 옵션마찰률 | vl_option_required / view_item | GA4 |
+| 신규회원 전환율 | vl_signup_done / purchase(guest) | GA4 |
+| 카카오채널 추가율 | vl_kakao_add / purchase | GA4 |
 
-**번역 파이프라인 (품질 대비 비용 최적)**
+**분해 축(필수)**: 디바이스(모바일/PC) · 유입(메타/자연/카카오) · 랜딩 URL · 광고 소재(utm_content) · 상품(마리백 vs 기타)
+**하단 표**: 소재별 `세션 → PDP → 장바구니 → 구매 + 구간 이탈률` (광고팀이 소재 끄고 켜는 근거로 그대로 사용)
+
+### 3.5 매일 09:00 자동 알림 `apps-script/funnel-alert.gs`
+
+```javascript
+/** GA4 Data API → Slack. 트리거: 매일 09:00 */
+const PROP = 'properties/000000000';                 // GA4 속성 ID
+const HOOK = PropertiesService.getScriptProperties().getProperty('SLACK_HOOK'); // ★ 코드에 직접 넣지 말 것
+
+function dailyFunnelAlert() {
+  const y = ymd(-1), base = range(-8, -2);           // 어제 vs 직전 7일
+  const cur = fetchFunnel(y, y), prev = fetchFunnel(base.s, base.e);
+  const steps = ['session_start','view_item','add_to_cart','begin_checkout','purchase'];
+
+  let msg = `*[VALLUAT 퍼널 ${y}]*\n`;
+  steps.forEach((k, i) => {
+    const c = cur[k] || 0, p = (prev[k] || 0) / 7;
+    const diff = p ? ((c - p) / p * 100) : 0;
+    const conv = i > 0 && cur[steps[i-1]] ? (c / cur[steps[i-1]] * 100).toFixed(1) + '%' : '-';
+    const flag = diff <= -15 ? ' :rotating_light:' : diff <= -8 ? ' :warning:' : '';
+    msg += `${k}: ${c.toLocaleString()} (전환 ${conv}, 7일평균 대비 ${diff.toFixed(0)}%)${flag}\n`;
+  });
+  UrlFetchApp.fetch(HOOK, { method: 'post', contentType: 'application/json',
+    payload: JSON.stringify({ text: msg }) });
+}
+
+function fetchFunnel(s, e) {
+  const res = AnalyticsData.Properties.runReport({
+    dateRanges: [{ startDate: s, endDate: e }],
+    dimensions: [{ name: 'eventName' }],
+    metrics: [{ name: 'eventCount' }]
+  }, PROP);
+  const o = {};
+  (res.rows || []).forEach(r => o[r.dimensionValues[0].value] = Number(r.metricValues[0].value));
+  return o;
+}
+function ymd(d){const t=new Date();t.setDate(t.getDate()+d);return Utilities.formatDate(t,'Asia/Seoul','yyyy-MM-dd');}
+function range(a,b){return {s:ymd(a), e:ymd(b)};}
 ```
-1차: DeepL API 자동 번역 (전 SKU 일괄, 1일)
-2차: 일본어 네이티브 감수 — 상품명/서브타이틀/키워드만 (전환에 직결되는 부분에 예산 집중)
-3차: 용어집(glossary) 고정 → 이후 신상품은 1차+용어집만으로 처리
-※ 상세 설명 본문은 1차 번역 + 이미지 내 텍스트(일본어 상세컷)로 보완 → 디자인팀 협업
-```
 
-## 1-7. 일본 법정 필수 페이지 (미비 시 광고 거절·행정 리스크)
-
-**`/ja/pages/tokushoho` — 特定商取引法に基づく表記 (필수, 미게시 시 위법)**
-
-```
-販売業者：            （주）벨류엣 법인명 로마자/한자 표기
-運営責任者：          대표자명
-所在地：              대한민국 서울특별시 ... （한국 주소 그대로 기재 가능）
-電話番号：            +82-XX-XXXX-XXXX（受付時間 平日10:00-17:00 KST）
-メールアドレス：      jp@valluat.com
-販売価格：            各商品ページに表示（関税・消費税込み／送料別途）
-商品代金以外の必要料金： 送料 ¥1,200（¥20,000以上のご購入で無料）／返品時の送料
-支払方法：            クレジットカード(JCB/VISA/Master/AMEX)、PayPay、コンビニ決済、Paidy
-支払時期：            ご注文時（コンビニ決済は発行後3日以内のお支払い）
-引渡time期：           ご注文確認後4〜7営業日以内に発送（韓国からの国際発送）
-返品・交換：          商品到着後7日以内。お客様都合の返品は返送料 ¥3,000 のご負担。
-                     未使用・タグ付き・付属品完備に限ります。
-                     不良品・誤配送は当社負担で交換いたします。
-```
-> ⚠️ 실제 게시 전 **법무·세무 검토 필수**. 상기는 개발용 필드 구조 초안입니다.
-
-**추가 필수 항목**
-- `プライバシーポリシー` : 개인정보 **국외(한국) 이전** 사실 명시 — 일본 개인정보보호법 대응
-- **外部送信規律 표기** : 전기통신사업법 개정에 따라 Meta 픽셀·GA 등 **제3자 송신 정보를 고지**해야 함. Cookie 배너 + 외부송신 안내 페이지 필요 ⚠️ (한국 사이트에 없는 항목, 누락 빈발)
-- **景品表示法** : 이중가격(정가/할인가) 표시, "最高" "No.1" 등 최상급 표현 규제 → **한국몰 카피 직역 시 위반 위험**. 마케팅팀에 전달 필요.
-
-## 1-8. 작업 범위 · 예상 기간 · 필요 외부 솔루션
-
-**WBS (Track A: 기존 솔루션 멀티샵 기준, 총 4~6주)**
-
-| 주차 | 작업 | 담당 | 산출물 |
-|---|---|---|---|
-| W0 (오늘) | 스택 판별 스크립트 실행, 벤더 RFI 발송(§4), `valluat.jp` 선점 | 개발 | 분기 확정 |
-| W1 | 멀티샵/서브도메인 개설, JPY 통화 설정, 도메인·SSL, 디자인 스킨 이식 | 개발+솔루션사 | 스테이징(noindex) |
-| W1~2 | KOMOJU 심사 신청(**리드타임 2~4주, 최장 병목 → W1에 반드시 착수**) | 개발+재무 | PSP 계정 |
-| W2 | 상품 데이터 일본어 필드 생성 + DeepL 1차 번역(전 SKU) | 개발+MD | ja CSV |
-| W2~3 | 네이티브 감수(상품명/키워드), 상세 이미지 일본어 버전 상위 30 SKU | MD+디자인 | 확정 카피 |
-| W3 | 결제 연동(카드/PayPay/콤비니/Paidy), 우편번호 자동완성, 체크아웃 QA | 개발 | 결제 동작 |
-| W3 | 배송·관세 정책 확정(관세사 자문), DDP 계약, 배송비 테이블 | 물류+관세사 | 정책 문서 |
-| W4 | 법정 페이지 3종, hreflang/구조화데이터, GA4·Meta 픽셀 JP 분리 | 개발 | SEO/계측 |
-| W4 | 통합 QA(§2), 소액 실결제 테스트, 실배송 1건 테스트 | 전원 | QA 리포트 |
-| W5 | 소프트 오픈(제한 트래픽), 지표 모니터링 | 마케팅 | 오픈 |
-| W6 | 개선 반영, 광고 본격 집행 | 전원 | — |
-
-**Track별 기간·공수**
-
-| Track | 조건 | 기간 | 개발 공수 | 초기 비용(추정) ⚠️ |
-|---|---|---|---|---|
-| **A. 기존 솔루션 멀티샵** | Cafe24/메이크샵 | **4~6주** | 0.5~1인 | 500~1,500만원 |
-| **B. Shopify 별도몰** | 신규 구축, KOMOJU 앱 | **6~10주** | 1~1.5인 | 1,500~3,500만원 |
-| **C. 풀커스텀** | 자체개발 스택 | **12~16주** | 2인+ | 5,000만원~ |
-
-**필요 외부 솔루션 목록**
-
-| 구분 | 솔루션 | 용도 | 비용대 ⚠️ | 필수도 |
-|---|---|---|---|---|
-| 결제 | **KOMOJU** | JCB/PayPay/콤비니/Paidy 통합 | 요율 ~3.6% | ★필수 |
-| 결제 백업 | Eximbay | 카드 이중화 | 요율 ~4% | ★권장 |
-| 번역 | DeepL API Pro | 1차 대량 번역 | 월 3만원~ | ★필수 |
-| 번역감수 | 네이티브 프리랜서/에이전시 | 상품명·카피 | SKU당 5천~1.5만원 | ★필수 |
-| 배송 | EMS + DHL(DDP) 계약 | 국제배송 | 건당 | ★필수 |
-| 통관 | 관세사 자문 | HS/RCEP 원산지 | 월 자문료 | ★필수 |
-| 주소 | zipcloud → KEN_ALL 자체DB | 우편번호 자동완성 | 무료 | ★필수 |
-| 법무 | 일본 EC 법무 검토 | 特商法·景表法·외부송신 | 1회 | ★필수 |
-| 리뷰 | Judge.me / 자체 | JP 리뷰 수집 | 월 3만원~ | 권장 |
-| CS | 챗봇+일본어 CS(외주) | 시차·언어 대응 | 월 | 권장 |
+> Slack Webhook은 **Apps Script 속성(Script Properties)에 저장**. 코드/문서/깃에 절대 하드코딩 금지.
 
 ---
 
-# 2. 테스트
+## 4. 제작물 C — 첫 구매 고객 → 카카오채널 + 회원 전환 흐름 (배포 8/29)
 
-## 2-1. 릴리스 게이트 체크리스트 (전부 ✔ 이전 오픈 금지)
-
-**A. 다국어/SEO**
-- [ ] `/ja/` 전 페이지 `<html lang="ja">`
-- [ ] hreflang **양방향** 설정(한국어 페이지 → 일본어 페이지 역참조 포함)
-- [ ] canonical이 자기 자신을 가리킴(한국어 페이지로 잘못 지정 X)
-- [ ] 자동 리다이렉트 없음 (Googlebot 접근 시 정상 노출)
-- [ ] `robots.txt`에 `/ja/` 차단 없음, sitemap에 `/ja/` URL 포함
-- [ ] 구조화 데이터 `priceCurrency: JPY` — [Rich Results Test] 오류 0
-
-**B. 결제 (스테이징 → 프로덕션 소액 실결제)**
-- [ ] JCB 테스트카드 승인 성공 → **실카드 ¥100 상품으로 실결제 1건**
-- [ ] VISA / Master / AMEX 각 1건
-- [ ] **3D Secure(본인인증) 화면 정상 표시 및 통과**
-- [ ] PayPay: 실제 일본 계정으로 앱 전환 → 복귀 → 주문 생성 확인
-- [ ] 콤비니: 결제번호 발행 → 미결제 시 자동 주문취소 배치 동작
-- [ ] Paidy: 승인 → 주문 생성 → 취소 플로우
-- [ ] **결제 취소·부분환불** 각 1건 (환불 반영 기간 안내 문구 확인)
-- [ ] 결제 실패 시 일본어 에러 메시지 노출(영어 raw 메시지 노출 금지)
-
-**C. 체크아웃 UX (전환율)**
-- [ ] 우편번호 7자리 입력 → 주소 자동완성 3케이스(도쿄/오사카/홋카이도)
-- [ ] フリガナ 필드 검증, 성/이름 분리
-- [ ] 게스트 결제 가능
-- [ ] **모바일(iOS Safari / Android Chrome) 실기기 전 과정 완주** — 일본 트래픽 대부분 모바일
-- [ ] 상품 상세 → 결제 완료까지 **3탭 이내**
-- [ ] LCP 2.5초 이내(일본 네트워크 기준 — WebPageTest Tokyo 노드로 측정)
-
-**D. 물류·세무**
-- [ ] 실제 일본 주소로 **테스트 발송 1건** → 통관·배송·추적번호 조회까지 완주
-- [ ] DDP 적용 시 **수취인에게 추가 청구 없음** 확인 (이것이 가장 중요)
-- [ ] 반품 1건 실행 → 환불 완료까지 소요일 측정
-
-**E. 법무/계측**
-- [ ] 特商法 페이지 게시 및 푸터 링크
-- [ ] 쿠키/외부송신 배너 표시
-- [ ] GA4에 `/ja/` 트래픽 별도 세그먼트 수집, 구매 이벤트 `currency: JPY`
-- [ ] Meta 픽셀 JP 도메인 인증(서브도메인일 경우 별도 인증 필요)
-
-## 2-2. QA 시나리오 (담당자에게 그대로 전달)
+### 4.1 흐름 (구현 1개, 접점 1곳 = 주문완료 페이지)
 
 ```
-S1. 일본 IP(VPN Tokyo) + iPhone Safari + 일본어 OS
-    → valluat.com 접속 → 배너 노출 → "日本語サイトへ" → /ja/ 이동 확인
-S2. /ja/ 홈 → 인기 상품 → 사이즈/소재 일본어 확인 → 카트 → 결제(JCB)
-    → 주문 확인 메일이 일본어로 수신되는지 확인 ★누락 빈발 항목
-S3. 콤비니 결제 선택 → 결제번호 메일 수신 → 미결제 3일 경과 → 자동취소 확인
-S4. 결제 완료 후 주문조회(비회원) → 배송 추적번호 확인
-S5. 반품 신청 폼 → 안내 메일 → 환불 처리
-※ 모든 자동발송 메일/SMS 템플릿의 일본어 번역 여부를 별도 체크(개발 초기 최다 누락)
+[비회원/첫구매] 결제 완료
+  → 주문완료 페이지 상단에 "혜택 카드" 노출
+      ① [카카오톡 채널 추가하기] 원탭  → 즉시 쿠폰코드 노출 + 복사 + GA4 vl_kakao_add
+      ② [3초 회원가입] (주문정보 자동연동 링크) → 적립금 안내 + GA4 vl_signup_click/done
+  → 배송완료 D+7: 채널 친구 대상 재구매 메시지 (마케팅팀 운영, 개발은 세그먼트 이벤트만 제공)
 ```
 
----
+### 4.2 `gtm/tag-kakao-firstbuy.html` (트리거: 주문완료 페이지)
 
-# 3. 배포안
+```html
+<script src="https://t1.kakaocdn.net/kakao_js_sdk/2.7.2/kakao.min.js"
+        integrity="sha384-TiCUE00h649CAMonG018J2ujOgDKW/kVWlChEuu4jK2vxfAAD0eZxzCKakxg55G4" crossorigin="anonymous"></script>
+<style>
+.vl-cvt{margin:16px auto;max-width:640px;border:1px solid #ececec;border-radius:4px;overflow:hidden;font-family:inherit}
+.vl-cvt .hd{background:#111;color:#fff;padding:13px 16px;font-size:14px;letter-spacing:.01em}
+.vl-cvt .bd{padding:16px}
+.vl-cvt .row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid #f2f2f2}
+.vl-cvt .row:last-child{border-bottom:0}
+.vl-cvt .tx{flex:1;font-size:13px;line-height:1.5;color:#333}
+.vl-cvt .tx b{display:block;font-size:14px;color:#111;margin-bottom:3px;font-weight:600}
+.vl-cvt button,.vl-cvt a.btn{border:0;border-radius:2px;padding:11px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;text-decoration:none;display:inline-block}
+.vl-cvt .k{background:#FEE500;color:#191600}
+.vl-cvt .s{background:#111;color:#fff}
+.vl-cvt .cp{margin-top:10px;padding:11px;background:#FFFBE6;border:1px dashed #E0C200;border-radius:3px;font-size:13px;text-align:center;display:none}
+.vl-cvt .cp code{font-size:15px;font-weight:700;letter-spacing:1px}
+</style>
 
-## 3-1. 오늘(D-Day) 실행 항목 — 회사 목표 직결
+<script>
+(function () {
+  var KAKAO_JS_KEY   = '{{KAKAO_JS_KEY}}';      // 공개용 JavaScript 키 (REST/Admin 키 절대 금지)
+  var CHANNEL_ID     = '_xxxxxx';               // 카카오 채널 공개 ID
+  var COUPON_CODE    = 'VLFRIEND10';            // 채널추가 리워드 쿠폰 (10% / 30일)
+  var SIGNUP_URL     = '/member/join.html';     // 스택별 회원가입 URL (§0.3 결과로 확정)
 
-| 시각 | 작업 | 담당 | 산출 |
-|---|---|---|---|
-| 오전 | `stack-detect.mjs` 실행 → 솔루션·다국어 가능 구조 확정 | 개발 | 분기 확정 리포트 |
-| 오전 | `valluat.jp` 도메인 선점 | 개발 | 도메인 확보 |
-| 오후 | KOMOJU / Eximbay **RFI 발송**(§4) — 심사 리드타임이 최장 병목 | 개발+재무 | 회신 대기 |
-| 오후 | 솔루션사(Cafe24 등)에 글로벌몰 스펙 문의 발송 | 개발 | 회신 대기 |
-| 오후 | 관세사에 HS 4202 대표 3개 SKU 품목분류·RCEP 적용 질의 | 물류 | 세율 확정 근거 |
+  if (window.Kakao && !Kakao.isInitialized()) Kakao.init(KAKAO_JS_KEY);
 
-> **대표실 보고 포인트**: 플랫폼(지그재그JP/라쿠텐/Qoo10 등) 입점 판단 시, **자체몰 직판의 진짜 비용은 결제 연동이 아니라 "가죽가방 관세·DDP 물류"** 라는 점. 1단계 플랫폼 입점으로 수요 검증 → 2단계 자체몰이 타당하다는 근거가 됩니다.
+  var anchor = document.querySelector('.xans-order-result, .order-complete, #orderComplete, main') || document.body;
+  var box = document.createElement('div');
+  box.className = 'vl-cvt';
+  box.innerHTML =
+    '<div class="hd">주문이 완료되었습니다 · 다음 구매 혜택 받기</div>' +
+    '<div class="bd">' +
+      '<div class="row"><div class="tx"><b>카카오톡 채널 추가하고 10% 쿠폰</b>' +
+        '배송 알림과 신상·셀럽 착용 소식을 톡으로 먼저 받아보세요.</div>' +
+        '<button type="button" class="k" id="vlKakao">채널 추가</button></div>' +
+      '<div class="cp" id="vlCoupon">쿠폰코드 <code>' + COUPON_CODE + '</code> ' +
+        '<button type="button" id="vlCopy" style="background:#111;color:#fff;padding:5px 9px;font-size:11px;margin-left:6px">복사</button></div>' +
+      '<div class="row"><div class="tx"><b>회원가입하고 적립금 3,000원</b>' +
+        '주문조회·재구매가 간편해지고 적립금은 다음 구매에 바로 사용됩니다.</div>' +
+        '<a class="btn s" id="vlSignup" href="' + SIGNUP_URL + '">3초 가입</a></div>' +
+    '</div>';
+  anchor.insertBefore(box, anchor.firstChild);
 
-## 3-2. 배포 단계
+  document.getElementById('vlKakao').addEventListener('click', function () {
+    window.dataLayer.push({ event: 'vl_kakao_add_click' });
+    try { Kakao.Channel.addChannel({ channelPublicId: CHANNEL_ID }); }
+    catch (e) { window.open('https://pf.kakao.com/' + CHANNEL_ID + '/friend', '_blank'); }
+    document.getElementById('vlCoupon').style.display = 'block';
+    window.dataLayer.push({ event: 'vl_kakao_add' });
+  });
+  document.getElementById('vlCopy').addEventListener('click', function () {
+    navigator.clipboard.writeText('VLFRIEND10'.replace('VLFRIEND10', arguments.length ? 'VLFRIEND10' : 'VLFRIEND10'));
+    this.textContent = '복사됨';
+  });
+  document.getElementById('vlSignup').addEventListener('click', function () {
+    window.dataLayer.push({ event: 'vl_signup_click' });
+  });
 
+  new IntersectionObserver(function (e, o) {
+    if (e[0].isIntersecting) { window.dataLayer.push({ event: 'vl_cvt_module_view' }); o.disconnect(); }
+  }, { threshold: 0.5 }).observe(box);
+})();
+</script>
 ```
-[Stage 1] 스테이징 구축 (W1~W4)
-  - 서브도메인 stg-jp.valluat.com, Basic Auth + robots noindex 필수
-  - PSP는 반드시 샌드박스 키 사용
-[Stage 2] 프로덕션 배포 (W4)
-  - 프로덕션 배포 시점에도 /ja/ 는 noindex 유지
-  - 내부 인원만 접근하여 소액 실결제 테스트 (§2-1 B)
-[Stage 3] 소프트 오픈 (W5)
-  - noindex 해제, sitemap 제출
-  - 일 광고비 상한 설정하고 소규모 Meta 트래픽 유입 → 결제 완주율 모니터링
-  - 첫 실주문 10건은 배송·통관 전수 추적
-[Stage 4] 본격 오픈 (W6~)
-  - 광고 확대, 플랫폼 입점 채널과 가격 정합성 점검(가격 역전 금지)
-[Rollback]
-  - 결제 오류율 > 5% 또는 통관 지연 발생 시 → /ja/ 를 "준비중" 랜딩 + 이메일 수집 폼으로 즉시 전환
-  - 롤백 스위치는 단일 플래그(feature flag)로 구현할 것
-```
 
-## 3-3. 보안 · 리스크 명시 (필독)
+### 4.3 병행 준비 (개발 외 담당)
 
-| 리스크 | 내용 | 대응 |
+| 항목 | 담당 | 기한 |
 |---|---|---|
-| **PG 시크릿 키 노출** | KOMOJU secret key를 프론트엔드/테마 코드에 넣으면 즉시 침해 | **반드시 서버 환경변수**. 프론트는 public key만. 리포지토리 커밋 금지, `.env` gitignore |
-| **PCI 범위 확대** | 카드번호를 자체 폼에서 직접 수집하면 PCI-DSS 부담 급증 | **Hosted Page / iframe(SAQ-A) 방식만 사용**. 자체 카드 폼 개발 금지 |
-| **개인정보 국외이전** | 일본 고객 정보를 한국 서버에 저장 → 고지·동의 필요 | 프라이버시 정책에 이전국·목적·항목 명시, 체크박스 동의 |
-| **외부송신 규율** | Meta 픽셀/GA 미고지 시 일본 전기통신사업법 저촉 소지 | 쿠키 배너 + 외부송신 안내 페이지 게시 |
-| **DDU 배송** | 고객이 수령 시 세금 청구 → 수취거부·CS 폭증·리뷰 훼손 | **DDP 고정. 정책상 DDU 금지** |
-| **가격 역전** | 플랫폼 입점가 < 자체몰가 시 자체몰 무력화 | 가격 정합성 룰 사전 확정(마케팅팀 협의) |
-| **테스트 결제 데이터** | 실카드 테스트 후 데이터 방치 | 테스트 주문은 태그로 격리, 정산 전 제외 처리 |
+| 카카오 채널 "친구추가 리워드" 쿠폰(10%/30일) 발행 | 마케팅 | 8/27 |
+| 회원가입 적립금 3,000원 정책 등록 | 운영 | 8/27 |
+| 카카오 개발자 콘솔 → 플랫폼에 `valluat.com` 도메인 등록 (JS키 도용 차단) | 개발 | 8/28 |
+| 배송 D+7 친구톡 시나리오 | 마케팅 | 9/5 (범위 외, 훅만 제공) |
+
+**성공 기준**: 첫 구매자 중 채널 추가율 **25%↑**, 비회원 주문의 회원 전환율 **15%↑**.
 
 ---
 
-# 4. 부록 — 오늘 발송할 벤더 질의서(RFI)
+## 5. 테스트
 
-**A. PSP(KOMOJU / Eximbay)에게**
-```
-1. 한국 법인(일본 법인 없음)이 계약 가능한가? 필요 서류와 심사 소요 기간은?
-2. JCB / PayPay / コンビニ / Paidy 각각 지원 여부와 개별 수수료율은?
-3. 정산 통화·주기, 해외 송금 수수료, 최소 정산금액은?
-4. 3D Secure 2.0 지원 여부, 일본어 결제 화면 제공 여부는?
-5. 연동 방식(Hosted Page / API / Shopify앱)과 샌드박스 제공 여부는?
-6. 월 거래액 5천만원 / 3억원 구간의 요율 테이블은?
-7. 결제 취소·부분환불·분쟁(chargeback) 처리 절차는?
-```
+### 5.1 배포 전 QA 체크리스트 (각 태그 공통)
 
-**B. 커머스 솔루션사에게**
-```
-1. 일본어몰을 서브폴더(valluat.com/ja/)로 운영 가능한가? 불가하면 가능한 구조는?
-2. 언어별 상품 필드(상품명/설명/소재/사이즈) 분리 저장을 지원하는가? API로 일괄 업로드 가능한가?
-3. JPY 통화 표시·결제 지원 범위와, 외부 PG(KOMOJU) 연동 가능 여부는?
-4. hreflang / 언어별 canonical / 언어별 sitemap 자동 생성을 지원하는가?
-5. 언어별 주문 확인 메일·SMS 템플릿 분리가 가능한가?
-6. 일본 우편번호 주소 자동완성 및 フリガナ 필드 커스텀이 가능한가?
-7. 구축 비용·기간 견적과, 위 항목 중 커스텀 개발이 필요한 항목 목록은?
-```
+- [ ] GTM **미리보기(Preview) 모드**에서 대상 페이지 3종(메인/PDP/주문완료) 정상 동작
+- [ ] iOS Safari(iPhone SE·15), Android Chrome(Galaxy S 계열), PC Chrome/Edge — **최소 5디바이스**
+- [ ] 콘솔 에러 0건 (`Uncaught` 검색)
+- [ ] 기존 스크립트 충돌 없음: 장바구니 담기 / 옵션 선택 / 쿠폰 적용 / 결제 진입 **직접 클릭 테스트**
+- [ ] 리뷰앱·채팅상담·플로팅 배너와 **z-index 겹침 없음**(스티키바가 채널톡 버튼 가리지 않는지)
+- [ ] 광고 픽셀(fbq) 이벤트 정상 발화 — Meta Pixel Helper로 확인
+- [ ] 저속 네트워크(Chrome DevTools Slow 4G)에서 스티키바가 3초 내 노출
 
-**C. 관세사에게**
-```
-1. 대표 SKU 3종(가죽/합성피혁/직물)의 일본 수입 시 HS 코드와 적용 관세율은?
-2. 가죽 핸드백의 소액수입 면세 제외 여부와, 1만엔 이하 주문 시 실제 부담 세액은?
-3. 한국산 SKU에 RCEP 협정세율 적용이 가능한가? 원산지증명 발급 절차와 비용은?
-4. 중국 생산 SKU를 한국에서 재수출할 경우의 원산지 판정과 세율은?
-5. DDP 배송 시 관세·소비세 선납 실무 절차(EMS vs DHL)는?
-6. 일본 현지 3PL 재고 보유 시 IOR(수입자) 및 JCT 과세사업자 등록 요건은?
-```
+### 5.2 항목별 테스트 절차
+
+**DEV-1 (로딩)**
+1. PageSpeed Insights 모바일: 마리백 PDP, 배포 전/후 각 3회 측정 → 중앙값 기록
+2. 합격선: **LCP ≤ 2.5s, CLS ≤ 0.1, 이미지 전송량 ≤ 2.5MB**
+3. "상세정보 더보기" 클릭 후 이미지 전량 정상 표시(잘림·공백 없음)
+
+**DEV-2 (퍼스트뷰)**
+1. 셀럽 이미지 4장 로드, 가로 스와이프 동작, 캡션 정렬
+2. 리뷰 요약 클릭 → 리뷰 영역 정확히 스크롤
+3. 스펙 데이터가 실제 마리백 실측치와 일치하는지 **운영팀 크로스체크**(오정보는 반품 유발)
+
+**DEV-3 (스티키바)**
+1. 옵션 미선택 상태에서 [바로구매] → 옵션 영역 스크롤 + 하이라이트 + `vl_option_required` 발화
+2. 옵션 선택 후 [장바구니] → 실제 장바구니에 담김(수량/옵션 일치)
+3. PC 화면(821px↑)에서는 미노출
+
+**계측**
+1. GA4 **DebugView**에서 7개 이벤트 실시간 확인
+2. **테스트 결제 1건**(최소금액 상품) 실행 → `purchase` 파라미터(transaction_id/value/items) 정확 검증
+3. 중복 발화 확인: 새로고침 시 `purchase` **재발화 안 됨** (주문번호 sessionStorage 가드 필요 시 추가)
+
+**카카오 흐름**
+1. 채널 미추가 계정으로 [채널 추가] → 카카오 레이어 정상, 추가 후 채널 친구 수 +1
+2. 쿠폰코드 노출·복사 동작, 해당 코드로 결제 시 10% 할인 실제 적용
+3. 이미 친구인 계정에서 눌러도 오류 없음
+4. 카카오 콘솔 도메인 등록 전/후 동작 확인(등록 전 오류 → fallback `pf.kakao.com` 새 창 동작 확인)
+
+### 5.3 효과 판정 (A/B)
+
+- **대상**: DEV-2, DEV-3 → GTM 내장 50/50 분기 또는 GA4 사용자 속성 `vl_variant` 로 구분
+- **기간**: 8/25~8/31 (최소 7일, 각 군 **주문 200건 이상** 확보 시 판정)
+- **판정 지표**: `add_to_cart / view_item`, `purchase / view_item`
+- **판정 규칙**: 개선률 **+5% 이상 & p<0.1** → 9/1 전량 적용 / **−3% 이하** → 즉시 롤백 후 원인 기록
+- DEV-1은 A/B 없이 전량 적용(성능은 A/B 대상이 아님), 사전/사후 7일 비교로 기록만.
+
+---
+
+## 6. 배포안
+
+### 6.1 일정
+
+| 날짜 | 작업 | 담당 | 산출/게이트 |
+|---|---|---|---|
+| **8/11(화)** | Step 0 판별 실행 + §0.3 표 확정, GTM 컨테이너 확보·설치 | 개발 | **게이트: GTM 없으면 이날 설치 완료가 최우선** |
+| 8/12~8/14 | DEV-1 개발 + 마리백 상세 이미지 WebP 재가공 | 개발/디자인 | 스테이징 검증 |
+| 8/13~8/15 | 퍼널 이벤트 태그·GA4 전환 설정·Looker 대시보드 제작 | 개발 | DebugView 검증 통과 |
+| **8/18(월)** | **DEV-1 마리백 단독 배포 + 대시보드 가동** | 개발 | LCP ≤2.5s 확인 후 진행 |
+| 8/20(수) | DEV-1 전 상품 확대 | 개발 | 24h 무장애 확인 후 |
+| 8/19~8/22 | DEV-3 개발/QA | 개발 | |
+| **8/25(월)** | **DEV-3 배포 (A/B 50%)** | 개발 | |
+| 8/22~8/26 | DEV-2 개발/QA + 스펙 데이터 검수 | 개발/운영 | 운영팀 실측 승인 |
+| **8/27(수)** | **DEV-2 배포 (A/B 50%)** | 개발 | |
+| 8/26~8/28 | 카카오 채널·쿠폰·적립금 세팅, 도메인 등록 | 개발/마케팅 | |
+| **8/29(금)** | **카카오·회원 전환 모듈 배포** | 개발 | 테스트 결제 통과 후 |
+| 8/31(일) 18:00 | **A/B 판정 → 승자 전량 적용 → 코드 프리즈** | 개발 | 이후 무배포 |
+| 9/1~ | 매일 09:00 퍼널 알림 확인, 경보 시 당일 대응 | 개발+마케팅 | |
+
+### 6.2 배포 절차 (모든 태그 공통)
+
+1. GTM 작업공간(Workspace)을 **작업별로 분리** 생성 (`dev1-lazy`, `dev3-sticky` …)
+2. 태그 등록 → **미리보기 모드**로 실제 도메인 QA (§5.1 체크리스트 전체)
+3. 버전 생성 시 **설명에 변경내용·롤백사유 기준 기입**
+4. **평일 오전 10~11시 배포**(트래픽 저점, 대응 인력 상주). 금요일 오후·주말 배포 금지
+5. 배포 후 **30분간 실시간 모니터링**: GA4 실시간 `purchase`, 콘솔 에러, CS 문의 유입
+6. 배포 로그를 `deploy-log.md`에 1줄 기록 (일시/버전/담당/롤백여부)
+
+### 6.3 롤백 기준 (하나라도 해당 시 즉시 이전 버전 게시 — 1분 내 복구)
+
+- 결제/장바구니 오류 문의 **1건이라도** 접수
+- 실시간 `purchase` 이벤트가 직전 동시간대 대비 **30% 이상 급감**
+- 콘솔 JS 에러가 신규 발생
+- Meta 픽셀 이벤트 누락
+
+> 롤백 = GTM → 이전 버전 → [게시]. 스택 관리자 화면 수정 없음 → **비개발자도 가능**(운영팀에 절차 공유).
+
+### 6.4 리스크·보안 명시
+
+| 리스크 | 대응 |
+|---|---|
+| **카카오 JS 키 노출** | JS 키는 공개용이나 **반드시 카카오 콘솔에 valluat.com 도메인 등록**. REST API 키·Admin 키는 프론트에 절대 금지. 알림톡 발송은 서버(또는 발송 대행사) 경유만 |
+| **Slack Webhook / GA4 API 자격증명** | Apps Script Script Properties에 보관. 문서·깃·GTM에 하드코딩 금지 |
+| **셀럽 이미지 초상권** | 마케팅팀이 사용 허용 컷만 전달. 미확인 컷은 DEV-2 배포 대상에서 제외 |
+| **스펙 오정보** | 사이즈/무게/수납은 운영팀 실측 서명 후 반영 (오정보 = 반품·CS 비용) |
+| **GTM 단일 장애점** | 9월 성수기 중 GTM 계정 접근 권한을 **개발 1명 + 대표실 1명** 이중화 |
+| **개인정보** | 데이터레이어에 이름·연락처·주소 **절대 push 금지**. 주문번호는 GA4 transaction_id 용도로만 |
+| **A/B 중 광고 성과 혼선** | 마케팅팀에 A/B 기간(8/25~8/31) 사전 공유, 소재 성과 판단 시 변수 고려 |
+
+### 6.5 오늘(8/10) 즉시 실행 3가지
+
+1. **Step 0 스크립트 실행** → §0.3 표 채우고 팀 공유 (개발, 30분 내)
+2. GTM 컨테이너 유무 확인 → 없으면 계정 생성 + 스택 관리자 화면에 스니펫 삽입 요청 (개발)
+3. 마케팅팀에 요청 발송: 마리백 셀럽 착용컷 4장(사용 허가분) + 채널 리워드 쿠폰 발행 (개발 → 마케팅)
