@@ -8,6 +8,7 @@
 이번 달 ─ 월 손익 + 일별 손익 막대 + 월 내역
 전체 ─ 기간·코인·포지션·결과 필터 + 누적 손익 곡선 + 전체 내역
 통계 ─ 승률·손익비·기대값·평균익/손·최대낙폭·최대연속패 + 코인별/요일별 성적
+복기 ─ 월간 AI 복기 리포트 (반복된 패턴 · 유지할 것 · 다음 달 규칙)
 ```
 
 ---
@@ -34,6 +35,19 @@ python3 -m http.server 8000
 저장소 → `Settings` → `Pages` → Source: `Deploy from a branch` → 브랜치 선택 → Save
 → `https://<아이디>.github.io/ideal-guide/journal/` 로 접속됩니다.
 폰 브라우저에서 열고 **홈 화면에 추가**하면 앱처럼 쓸 수 있습니다.
+
+### 4) 월간 AI 복기 켜기 (선택)
+
+저장소 → `Settings` → `Secrets and variables` → `Actions` → `New repository secret` 로 3개 등록:
+
+| 이름 | 값 |
+|---|---|
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com)에서 발급 |
+| `JOURNAL_EMAIL` | 위 2)에서 만든 로그인 이메일 |
+| `JOURNAL_PASSWORD` | 그 비밀번호 |
+
+실행: GitHub → `Actions` 탭 → **매매일지 월간 복기** → `Run workflow`
+(대상 월을 비워두면 지난달, `2026-09`처럼 적으면 그 달)
 
 ---
 
@@ -62,6 +76,37 @@ python3 -m http.server 8000
 
 ---
 
+## 월간 AI 복기
+
+한 달치 기록 전체(손익·태그·복기란에 적은 내 말)를 읽고 **반복되는 행동 패턴**을 찾아냅니다.
+
+나오는 것:
+- **반복된 패턴** — 패턴 이름 + 기록 속 근거(날짜·코인·태그) + 그게 실제로 잃게 한 금액 + 바꿀 행동
+- **유지할 것** — 잘하고 있는 습관
+- **다음 달 규칙** — 지켰는지 판정 가능한 문장으로
+- **질문 하나** — 스스로 답해볼 것
+
+안 하는 것: 시장 전망, 종목 추천, 위로. 내 기록에 없는 숫자는 쓰지 않습니다.
+
+**실행** — GitHub `Actions` 탭 → `매매일지 월간 복기` → `Run workflow`.
+결과는 앱의 **[복기] 탭**에 바로 뜹니다. 같은 달을 다시 돌리면 덮어씁니다.
+
+매월 1일 자동 실행을 켜려면 `.github/workflows/journal-report.yml`의 `schedule` 3줄 주석을 푸세요.
+(한 달에 API 호출 1회라 비용은 매우 작습니다)
+
+```bash
+# 로컬에서 돌려보려면 (.env 에 ANTHROPIC_API_KEY / JOURNAL_EMAIL / JOURNAL_PASSWORD 필요)
+npm run journal:report              # 지난달
+npm run journal:report 2026-09      # 특정 월
+node src/journal-report.js --dry-run  # AI 호출 없이 집계만 확인
+```
+
+> **리포트는 저장소가 아니라 Supabase에 저장됩니다.** 저장소가 공개일 수 있어서,
+> 매매 금액이 파일이나 Actions 로그에 남지 않도록 일부러 그렇게 했습니다.
+> 실행 로그에는 "매매 23건, 패턴 3개" 같은 건수만 찍힙니다.
+
+---
+
 ## 숫자 읽는 법
 
 | 지표 | 뜻 | 봐야 하는 이유 |
@@ -84,16 +129,20 @@ python3 -m http.server 8000
 ```
 journal/
   index.html          화면 구조
-  app.js              로직 (집계·차트·CRUD·CSV)
+  app.js              로직 (집계·차트·CRUD·CSV·복기 표시)
   styles.css          스타일 (라이트/다크 자동)
-  supabase-setup.sql  테이블 + 보안 정책
+  supabase-setup.sql  테이블 2개(trades, journal_reports) + 보안 정책
+src/
+  journal-report.js   월간 AI 복기 생성
+.github/workflows/
+  journal-report.yml  복기 실행 버튼
 ```
 
 설정은 저장소 루트의 `config.js`(Supabase 주소·공개키)를 그대로 씁니다.
 
 ## 보안
 
-`trades` 테이블은 **RLS(행 수준 보안)** 로 잠겨 있어 로그인한 본인 행만 읽기·쓰기·삭제됩니다.
+`trades`와 `journal_reports` 테이블은 **RLS(행 수준 보안)** 로 잠겨 있어 로그인한 본인 행만 읽기·쓰기·삭제됩니다.
 루트의 방명록(`messages`)과 달리 “누구나 읽기/쓰기”가 아닙니다.
 `config.js`의 키는 브라우저에 노출되도록 설계된 **공개용 키**라 공개 저장소에 있어도 안전합니다.
 (SECRET 키는 절대 프론트엔드에 넣지 마세요.)

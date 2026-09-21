@@ -1,0 +1,45 @@
+# 매매일지 월간 AI 복기 — 버튼으로 실행하는 수동 모드.
+#
+# 실행 방법: GitHub → Actions 탭 → "매매일지 월간 복기" → Run workflow
+#
+# 필요 설정: 저장소 Settings → Secrets and variables → Actions 에 3개 등록
+#   ANTHROPIC_API_KEY  : https://console.anthropic.com 에서 발급
+#   JOURNAL_EMAIL      : 매매일지에 로그인할 때 쓰는 이메일
+#   JOURNAL_PASSWORD   : 그 비밀번호
+#
+# 매월 1일 자동 실행을 켜려면 아래 schedule 3줄의 주석(#)을 제거하세요.
+# (한 달에 API 호출 1회라 비용은 매우 작습니다)
+name: 매매일지 월간 복기
+
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "대상 월 (예: 2026-09 · 비워두면 지난달)"
+        required: false
+        default: ""
+  # schedule:
+  #   - cron: "0 0 1 * *" # 매월 1일 00:00 UTC = 09:00 KST
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # 리포트는 저장소가 아니라 Supabase에 저장되므로 쓰기 권한이 필요 없습니다
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Generate monthly review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          JOURNAL_EMAIL: ${{ secrets.JOURNAL_EMAIL }}
+          JOURNAL_PASSWORD: ${{ secrets.JOURNAL_PASSWORD }}
+        # 실행 로그에는 건수만 남고 매매 금액은 출력되지 않습니다.
+        run: node src/journal-report.js "${{ github.event.inputs.month }}"

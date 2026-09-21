@@ -12,6 +12,8 @@ const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매�
 
 const state = {
   trades: [],
+  reports: [],
+  reviewMonth: null,
   tab: "today",
   editingId: null,
   side: "long",
@@ -99,7 +101,8 @@ function showAuth() {
 async function showApp() {
   authView.hidden = true;
   appView.hidden = false;
-  await loadTrades();
+  await Promise.all([loadTrades(), loadReports()]);
+  render();
 }
 
 /* ── 데이터 ───────────────────────────────── */
@@ -123,6 +126,18 @@ async function loadTrades() {
   $("#syncMsg").textContent = `총 ${state.trades.length}건 · 마지막 동기화 ${new Date().toLocaleTimeString("ko-KR")}`;
   refreshSymbolList();
   render();
+}
+
+async function loadReports() {
+  const { data, error } = await supabase
+    .from("journal_reports")
+    .select("month, trade_count, stats, report, updated_at")
+    .order("month", { ascending: false })
+    .limit(60);
+  // 테이블이 아직 없어도 앱 나머지는 정상 동작해야 한다
+  state.reports = error ? [] : (data || []);
+  if (!state.reviewMonth && state.reports.length) state.reviewMonth = state.reports[0].month;
+  return error;
 }
 
 async function saveTrade(payload) {
@@ -203,6 +218,7 @@ function startEdit(id) {
     b.classList.toggle("is-on", on);
     b.setAttribute("aria-checked", String(on));
   });
+  form.hidden = false;
   $("#entryTitle").textContent = "✏️ 기록 수정";
   $("#saveBtn").textContent = "수정 저장";
   $("#cancelEdit").hidden = false;
@@ -272,6 +288,8 @@ $$(".tab").forEach((tab) => {
       t.setAttribute("aria-selected", String(on));
     });
     $$(".panel").forEach((p) => { p.hidden = p.dataset.panel !== state.tab; });
+    // 통계·복기 탭은 읽는 화면이라 입력 폼을 숨겨 스크롤을 줄인다
+    form.hidden = state.tab === "stats" || state.tab === "review";
     render();
   });
 });
@@ -738,11 +756,102 @@ function renderStats(panel) {
     </div>`;
 }
 
+/* ── 패널: 복기 (월간 AI 리포트) ──────────── */
+function renderReview(panel) {
+  if (!state.reports.length) {
+    panel.innerHTML = `<div class="card">
+      <div class="list-head"><h2 class="list-title">🤖 월간 AI 복기</h2></div>
+      <p class="empty">아직 생성된 리포트가 없습니다.<br><br>
+        GitHub → <strong>Actions</strong> 탭 → <strong>매매일지 월간 복기</strong> → <strong>Run workflow</strong><br>
+        버튼을 누르면 지난달 기록을 읽고 복기를 만들어 여기에 표시합니다.</p>
+      <div class="entry-foot"><button class="btn btn-ghost btn-sm" data-reload-report type="button">다시 불러오기</button></div>
+    </div>`;
+    wireReviewActions(panel);
+    return;
+  }
+
+  const cur = state.reports.find((r) => r.month === state.reviewMonth) || state.reports[0];
+  const st = cur.stats || {};
+  const rp = cur.report || {};
+  const [ry, rm] = cur.month.split("-").map(Number);
+
+  const chips = state.reports.map((r) =>
+    `<button type="button" class="chip${r.month === cur.month ? " is-on" : ""}" data-month="${esc(r.month)}">${esc(r.month)}</button>`
+  ).join("");
+
+  const patterns = (rp.patterns || []).map((p, i) => `
+    <div class="pattern">
+      <div class="pattern-head"><span class="pattern-no">${i + 1}</span><h3 class="pattern-title">${esc(p.title)}</h3></div>
+      <dl class="pattern-body">
+        <dt>근거</dt><dd>${esc(p.evidence)}</dd>
+        <dt>대가</dt><dd>${esc(p.cost)}</dd>
+        <dt>바꿀 것</dt><dd class="fix">${esc(p.fix)}</dd>
+      </dl>
+    </div>`).join("");
+
+  const listOf = (arr, cls) => (arr || []).map((x) => `<li class="${cls}">${esc(x)}</li>`).join("");
+
+  panel.innerHTML =
+    `<div class="card">
+      <div class="list-head">
+        <h2 class="list-title">🤖 월간 AI 복기</h2>
+        <button class="btn btn-ghost btn-sm" data-reload-report type="button">새로고침</button>
+      </div>
+      <div class="tagpicks">${chips}</div>
+    </div>` +
+    `<div class="card hero">
+      <div class="hero-label">${ry}년 ${rm}월</div>
+      <div class="review-headline">${esc(rp.headline || "")}</div>
+      <div class="hero-sub">매매 ${cur.trade_count}건 · ${st.wins ?? 0}승 ${st.draws ?? 0}무 ${st.loses ?? 0}패</div>
+    </div>` +
+    `<div class="tiles">
+      ${tile("실현 손익", `<span class="${toneOf(st.total ?? 0)}">${money(st.total ?? 0, { sign: true })}</span>`, "")}
+      ${tile("승률", `${st.win_rate ?? 0}<span style="font-size:.8rem">%</span>`, `${st.wins ?? 0}승 ${st.loses ?? 0}패`)}
+      ${tile("손익비", st.payoff ?? "—", "평균수익 ÷ 평균손실")}
+      ${tile("1회 기대값", `<span class="${toneOf(st.expectancy ?? 0)}">${money(st.expectancy ?? 0, { sign: true })}</span>`, "매매 한 건당")}
+    </div>` +
+    (rp.summary ? `<div class="card"><p class="review-summary">${esc(rp.summary)}</p></div>` : "") +
+    (patterns ? `<div class="card">
+      <div class="list-head"><h2 class="list-title">반복된 패턴</h2></div>
+      ${patterns}
+    </div>` : "") +
+    ((rp.strengths || []).length ? `<div class="card">
+      <div class="list-head"><h2 class="list-title">유지할 것</h2></div>
+      <ul class="keeps">${listOf(rp.strengths, "keep")}</ul>
+    </div>` : "") +
+    ((rp.rules || []).length ? `<div class="card">
+      <div class="list-head"><h2 class="list-title">${rm === 12 ? 1 : rm + 1}월 규칙</h2></div>
+      <ul class="keeps">${listOf(rp.rules, "rule")}</ul>
+    </div>` : "") +
+    (rp.question ? `<div class="card question">
+      <div class="q-mark">?</div>
+      <p class="q-text">${esc(rp.question)}</p>
+    </div>` : "") +
+    `<p class="disclaimer">이 복기는 내가 남긴 기록만 읽고 AI가 정리한 것입니다. 시장 전망이나 투자 자문이 아닙니다.
+     생성 시각 ${new Date(cur.updated_at).toLocaleString("ko-KR")}</p>`;
+
+  wireReviewActions(panel);
+}
+
+function wireReviewActions(panel) {
+  $$("[data-month]", panel).forEach((b) =>
+    b.addEventListener("click", () => { state.reviewMonth = b.dataset.month; render(); }));
+  const reload = $("[data-reload-report]", panel);
+  if (reload) reload.addEventListener("click", async () => {
+    reload.disabled = true;
+    reload.textContent = "불러오는 중...";
+    const err = await loadReports();
+    render();
+    toast(err ? "리포트를 불러오지 못했습니다" : `리포트 ${state.reports.length}개`);
+  });
+}
+
 /* ── 렌더 ─────────────────────────────────── */
 function render() {
   const panel = $(`.panel[data-panel="${state.tab}"]`);
   if (!panel) return;
-  ({ today: renderToday, month: renderMonth, all: renderAll, stats: renderStats })[state.tab](panel);
+  ({ today: renderToday, month: renderMonth, all: renderAll,
+     stats: renderStats, review: renderReview })[state.tab](panel);
 }
 
 $("#panels").addEventListener("click", (e) => {

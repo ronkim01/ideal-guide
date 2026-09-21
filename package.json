@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "company": "node src/run.js",
-    "company:goal": "node src/run.js"
+    "company:goal": "node src/run.js",
+    "journal:report": "node src/journal-report.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.0"
