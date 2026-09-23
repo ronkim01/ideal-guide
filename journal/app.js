@@ -49,6 +49,38 @@ function money(v, opts = {}) {
 }
 
 const toneOf = (n) => (n > 0 ? "up" : n < 0 ? "down" : "flat");
+
+const fmtPrice = (v) => Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 8 });
+
+/* 빈 칸과 null을 숫자 0으로 읽지 않도록 (Number("") 도 Number(null) 도 0이 된다) */
+const numOf = (v) =>
+  v === null || v === undefined || String(v).trim() === "" ? NaN : Number(v);
+
+/* 진입가·TP·SL로 계획 손익비(R) 계산.
+   롱: 목표폭 = TP−진입, 손절폭 = 진입−SL / 숏은 반대. 방향이 어긋나면 알려준다. */
+function checkPlan(entry, tp, sl, side) {
+  if (![entry, tp, sl].every(Number.isFinite)) return { state: "empty" };
+  const long = side === "long";
+  const reward = long ? tp - entry : entry - tp;
+  const risk = long ? entry - sl : sl - entry;
+  if (!(risk > 0)) {
+    return { state: "bad", msg: long
+      ? "롱은 손절가(SL)가 진입가보다 낮아야 합니다"
+      : "숏은 손절가(SL)가 진입가보다 높아야 합니다" };
+  }
+  if (!(reward > 0)) {
+    return { state: "bad", msg: long
+      ? "롱은 목표가(TP)가 진입가보다 높아야 합니다"
+      : "숏은 목표가(TP)가 진입가보다 낮아야 합니다" };
+  }
+  return { state: "ok", reward, risk, r: reward / risk };
+}
+
+/* 저장된 기록 한 건의 계획 손익비 (셋 중 하나라도 없으면 null) */
+function planOf(t) {
+  const v = checkPlan(numOf(t.entry_price), numOf(t.tp_price), numOf(t.sl_price), t.position);
+  return v.state === "ok" ? v : null;
+}
 const RESULT_KO = { win: "승", draw: "무", lose: "패" };
 const deriveResult = (pnl) => (pnl > 0 ? "win" : pnl < 0 ? "lose" : "draw");
 
@@ -173,6 +205,36 @@ $("#tagPicks").addEventListener("click", (e) => {
   renderTagPicks();
 });
 
+function readPlanInputs() {
+  return checkPlan(
+    numOf($("#fEntry").value), numOf($("#fTp").value), numOf($("#fSl").value), state.side);
+}
+
+/* 입력하는 즉시 계획 손익비를 보여준다 — 기록 전에 스스로 판단할 수 있게 */
+function renderRR() {
+  const el = $("#rrPreview");
+  const v = readPlanInputs();
+
+  if (v.state === "empty") {
+    el.className = "rr";
+    el.innerHTML = `<span class="rr-hint">진입가 · TP · SL을 넣으면 계획 손익비가 계산됩니다</span>`;
+    return;
+  }
+  if (v.state === "bad") {
+    el.className = "rr is-bad";
+    el.innerHTML = `<span class="rr-msg">⚠ ${esc(v.msg)}</span>`;
+    return;
+  }
+  el.className = "rr " + (v.r >= 2 ? "is-good" : v.r >= 1 ? "" : "is-thin");
+  el.innerHTML =
+    `<span class="rr-label">계획 손익비</span>
+     <span class="rr-value">${v.r.toFixed(2)}<em>R</em></span>
+     <span class="rr-detail">목표 +${fmtPrice(v.reward)} · 손절 −${fmtPrice(v.risk)}</span>` +
+    (v.r < 1 ? `<span class="rr-note">손절폭이 목표폭보다 큽니다</span>` : "");
+}
+
+["fEntry", "fTp", "fSl"].forEach((id) => $("#" + id).addEventListener("input", renderRR));
+
 $$(".seg-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     state.side = btn.dataset.pos;
@@ -181,6 +243,7 @@ $$(".seg-btn").forEach((btn) => {
       b.classList.toggle("is-on", on);
       b.setAttribute("aria-checked", String(on));
     });
+    renderRR(); // 롱↔숏을 바꾸면 손익비 방향이 뒤집힌다
   });
 });
 
@@ -200,6 +263,7 @@ function resetForm() {
   $("#saveBtn").textContent = "기록하기";
   $("#cancelEdit").hidden = true;
   renderTagPicks();
+  renderRR();
 }
 
 function startEdit(id) {
@@ -211,6 +275,9 @@ function startEdit(id) {
   $("#fDate").value = t.traded_at;
   $("#fSymbol").value = t.symbol;
   $("#fPnl").value = t.pnl;
+  $("#fEntry").value = t.entry_price ?? "";
+  $("#fTp").value = t.tp_price ?? "";
+  $("#fSl").value = t.sl_price ?? "";
   $("#fMemo").value = t.memo || "";
   $("#fResult").value = t.result === deriveResult(Number(t.pnl)) ? "auto" : t.result;
   $$(".seg-btn").forEach((b) => {
@@ -223,6 +290,7 @@ function startEdit(id) {
   $("#saveBtn").textContent = "수정 저장";
   $("#cancelEdit").hidden = false;
   renderTagPicks();
+  renderRR();
   form.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -233,6 +301,14 @@ form.addEventListener("submit", async (e) => {
   const pnl = Number($("#fPnl").value);
   if (!Number.isFinite(pnl)) return toast("손익을 숫자로 입력하세요");
 
+  // 계획(진입가·TP·SL)은 필수. 방향이 어긋나면 오타일 가능성이 커서 막는다.
+  const plan = readPlanInputs();
+  if (plan.state === "empty") {
+    $("#fEntry").focus();
+    return toast("진입가 · TP · SL을 모두 입력하세요");
+  }
+  if (plan.state === "bad") return toast(plan.msg);
+
   const pick = $("#fResult").value;
   const payload = {
     traded_at: $("#fDate").value || localDate(),
@@ -240,6 +316,9 @@ form.addEventListener("submit", async (e) => {
     position: state.side,
     pnl,
     result: pick === "auto" ? deriveResult(pnl) : pick,
+    entry_price: Number($("#fEntry").value),
+    tp_price: Number($("#fTp").value),
+    sl_price: Number($("#fSl").value),
     memo: $("#fMemo").value.trim() || null,
     tags: state.tags,
   };
@@ -323,12 +402,18 @@ function summarize(trades) {
     return { ...t, cum };
   });
 
-  const best = trades.length ? Math.max(...trades.map((t) => Number(t.pnl))) : 0;
-  const worst = trades.length ? Math.min(...trades.map((t) => Number(t.pnl))) : 0;
+  const gains = trades.map((t) => Number(t.pnl)).filter((v) => v > 0);
+  const drops = trades.map((t) => Number(t.pnl)).filter((v) => v < 0);
+  const best = gains.length ? Math.max(...gains) : null;
+  const worst = drops.length ? Math.min(...drops) : null;
+
+  // 계획 손익비 — 진입가·TP·SL이 모두 있는 건만
+  const plans = trades.map(planOf).filter(Boolean);
+  const avgPlannedR = plans.length ? plans.reduce((a, p) => a + p.r, 0) / plans.length : null;
 
   return { trades, chrono, curve, total, wins: wins.length, loses: loses.length,
            draws: draws.length, winRate, avgWin, avgLoss, payoff, expectancy,
-           mdd, maxStreak, best, worst };
+           mdd, maxStreak, best, worst, avgPlannedR, plannedCount: plans.length };
 }
 
 /* ── 조각 렌더러 ──────────────────────────── */
@@ -368,6 +453,7 @@ function tradeRows(trades, emptyText) {
     const pnl = Number(t.pnl);
     const res = t.result;
     const color = res === "win" ? "var(--profit)" : res === "lose" ? "var(--loss)" : "var(--muted)";
+    const plan = planOf(t);
     return `<li class="row">
       <div class="row-date">${esc(shortDate(t.traded_at))}</div>
       <div class="row-main">
@@ -375,6 +461,7 @@ function tradeRows(trades, emptyText) {
           <span class="row-sym">${esc(t.symbol)}</span>
           <span class="row-pos">${t.position === "long" ? "롱" : "숏"}</span>
           <span class="row-res" style="color:${color}"><i style="background:${color}"></i>${RESULT_KO[res]}</span>
+          ${plan ? `<span class="row-rr" title="진입 ${fmtPrice(t.entry_price)} · TP ${fmtPrice(t.tp_price)} · SL ${fmtPrice(t.sl_price)}">계획 ${plan.r.toFixed(1)}R</span>` : ""}
         </div>
         ${t.memo ? `<div class="row-memo">${esc(t.memo)}</div>` : ""}
         ${(t.tags || []).length ? `<div class="row-tags">${t.tags.map((g) => `<span class="row-tag">${esc(g)}</span>`).join("")}</div>` : ""}
@@ -583,8 +670,8 @@ function renderToday(panel) {
     heroTile("오늘 실현 손익", s.total, list.length ? `${list.length}건 · ${s.wins}승 ${s.draws}무 ${s.loses}패` : "오늘 기록 없음") +
     `<div class="tiles">
       ${winRateTile(s)}
-      ${tile("최고 수익", `<span class="up">${list.length ? money(s.best, { sign: true }) : "—"}</span>`, "오늘 한 건 기준")}
-      ${tile("최대 손실", `<span class="down">${list.length ? money(s.worst, { sign: true }) : "—"}</span>`, "오늘 한 건 기준")}
+      ${tile("최고 수익", s.best === null ? "—" : `<span class="up">${money(s.best, { sign: true })}</span>`, "오늘 한 건 기준")}
+      ${tile("최대 손실", s.worst === null ? "—" : `<span class="down">${money(s.worst, { sign: true })}</span>`, "오늘 한 건 기준")}
     </div>` +
     listCard("오늘 매매 내역", list, "오늘 기록이 아직 없습니다. 위에서 첫 매매를 기록해보세요.");
 }
@@ -616,7 +703,9 @@ function renderMonth(panel) {
     heroTile(`${mm}월 실현 손익`, s.total, list.length ? `${list.length}건 · ${s.wins}승 ${s.draws}무 ${s.loses}패` : "이번 달 기록 없음") +
     `<div class="tiles">
       ${winRateTile(s)}
-      ${tile("손익비", s.payoff ? s.payoff.toFixed(2) : "—", "평균수익 ÷ 평균손실")}
+      ${tile("계획 손익비", s.avgPlannedR ? s.avgPlannedR.toFixed(2) + "<span style=\"font-size:.8rem\">R</span>" : "—",
+        s.plannedCount ? `${s.plannedCount}건 평균` : "TP/SL 기록 없음")}
+      ${tile("실제 손익비", s.payoff ? s.payoff.toFixed(2) : "—", "평균수익 ÷ 평균손실")}
       ${tile("1회 기대값", `<span class="${toneOf(s.expectancy)}">${list.length ? money(s.expectancy, { sign: true }) : "—"}</span>`, "매매 한 건당")}
     </div>` +
     chartCard("일별 실현 손익", `${mm}월 1일 ~ ${upto}일`, "monthBars", PNL_LEGEND) +
@@ -687,6 +776,61 @@ function renderAll(panel) {
   });
 }
 
+/* 계획한 손익비와 실제로 나온 손익비의 격차 — TP/SL을 적는 진짜 이유 */
+function planVsRealCard(s) {
+  if (!s.plannedCount) {
+    return `<div class="card">
+      <div class="list-head"><h2 class="list-title">계획 vs 실제</h2></div>
+      <p class="empty">진입가 · TP · SL을 적은 매매가 쌓이면<br>계획한 손익비와 실제 결과를 비교해 보여드립니다.</p>
+    </div>`;
+  }
+
+  const planned = s.avgPlannedR;
+  const real = s.payoff;
+  let verdict, tone;
+
+  if (real === null) {
+    verdict = "아직 손실로 끝난 매매가 없어 실제 손익비를 계산할 수 없습니다.";
+    tone = "flat";
+  } else {
+    const keep = real / planned;
+    if (keep >= 0.9) {
+      verdict = "계획한 대로 실행하고 있습니다. 이 습관을 유지하세요.";
+      tone = "up";
+    } else if (keep >= 0.6) {
+      verdict = "실제가 계획보다 조금 낮습니다. 목표가 전에 미리 나오는 매매가 섞여 있는지 보세요.";
+      tone = "flat";
+    } else {
+      verdict = "실제가 계획보다 크게 낮습니다. 이익을 일찍 확정하거나 손절을 미루고 있을 가능성이 큽니다.";
+      tone = "down";
+    }
+  }
+
+  const bar = (val, max, cls) =>
+    `<div class="pvr-track"><div class="pvr-fill ${cls}" style="width:${Math.min(100, (val / max) * 100)}%"></div></div>`;
+  const max = Math.max(planned, real || 0, 1) * 1.15;
+
+  return `<div class="card">
+    <div class="list-head">
+      <h2 class="list-title">계획 vs 실제</h2>
+      <span class="list-count">${s.plannedCount}건 기준</span>
+    </div>
+    <div class="pvr">
+      <div class="pvr-row">
+        <span class="pvr-name">계획한 손익비</span>
+        ${bar(planned, max, "is-plan")}
+        <span class="pvr-num">${planned.toFixed(2)}R</span>
+      </div>
+      <div class="pvr-row">
+        <span class="pvr-name">실제 손익비</span>
+        ${real === null ? `<div class="pvr-track"></div>` : bar(real, max, "is-real")}
+        <span class="pvr-num">${real === null ? "—" : real.toFixed(2)}</span>
+      </div>
+    </div>
+    <p class="pvr-verdict ${tone}">${esc(verdict)}</p>
+  </div>`;
+}
+
 /* ── 패널: 통계 ───────────────────────────── */
 function renderStats(panel) {
   const s = summarize(state.trades);
@@ -731,15 +875,18 @@ function renderStats(panel) {
     heroTile("전체 누적 손익", s.total, `${n}건 · ${s.wins}승 ${s.draws}무 ${s.loses}패`) +
     `<div class="tiles">
       ${winRateTile(s)}
-      ${tile("손익비", s.payoff ? s.payoff.toFixed(2) : "—", "1보다 크면 이익이 손실보다 큼")}
+      ${tile("계획 손익비", s.avgPlannedR ? s.avgPlannedR.toFixed(2) + `<span style="font-size:.8rem">R</span>` : "—",
+        s.plannedCount ? `${s.plannedCount}건 평균` : "TP/SL 기록 없음")}
+      ${tile("실제 손익비", s.payoff ? s.payoff.toFixed(2) : "—", "1보다 크면 이익이 손실보다 큼")}
       ${tile("1회 기대값", `<span class="${toneOf(s.expectancy)}">${n ? money(s.expectancy, { sign: true }) : "—"}</span>`, "매매 한 건당 기대 금액")}
-      ${tile("평균 수익", `<span class="up">${s.avgWin ? money(s.avgWin) : "—"}</span>`, `${s.wins}건 평균`)}
-      ${tile("평균 손실", `<span class="down">${s.avgLoss ? money(s.avgLoss) : "—"}</span>`, `${s.loses}건 평균`)}
-      ${tile("최대 낙폭", `<span class="down">${n ? money(s.mdd) : "—"}</span>`, "누적 고점 대비")}
+      ${tile("평균 수익", s.avgWin ? `<span class="up">${money(s.avgWin)}</span>` : "—", `${s.wins}건 평균`)}
+      ${tile("평균 손실", s.avgLoss ? `<span class="down">${money(s.avgLoss)}</span>` : "—", `${s.loses}건 평균`)}
+      ${tile("최대 낙폭", s.mdd ? `<span class="down">${money(s.mdd)}</span>` : "—", "누적 고점 대비")}
       ${tile("최대 연속 패", n ? `${s.maxStreak}연패` : "—", "연속으로 진 최대 횟수")}
-      ${tile("최고 / 최악", n ? `<span class="up">${money(s.best, { sign: true })}</span>` : "—",
-        n ? `최악 ${money(s.worst, { sign: true })}` : "")}
+      ${tile("최고 / 최악", s.best === null ? "—" : `<span class="up">${money(s.best, { sign: true })}</span>`,
+        s.worst === null ? "손실 거래 없음" : `최악 ${money(s.worst, { sign: true })}`)}
     </div>` +
+    planVsRealCard(s) +
     `<div class="card">
       <div class="list-head"><h2 class="list-title">코인별 성적</h2></div>
       <div class="tbl-wrap"><table class="tbl">
@@ -864,14 +1011,21 @@ $("#panels").addEventListener("click", (e) => {
 /* ── CSV 내보내기 ─────────────────────────── */
 $("#csvBtn").addEventListener("click", () => {
   if (!state.trades.length) return toast("내보낼 기록이 없습니다");
-  const head = ["날짜", "코인", "포지션", "결과", "손익", "태그", "매매 복기"];
+  const head = ["날짜", "코인", "포지션", "결과", "손익",
+                "진입가", "TP", "SL", "계획 손익비", "태그", "매매 복기"];
   const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const body = [...state.trades]
     .sort((a, b) => a.traded_at.localeCompare(b.traded_at))
-    .map((t) => [
-      t.traded_at, t.symbol, t.position === "long" ? "롱" : "숏",
-      RESULT_KO[t.result], t.pnl, (t.tags || []).join(" "), t.memo || "",
-    ].map(cell).join(","));
+    .map((t) => {
+      const plan = planOf(t);
+      return [
+        t.traded_at, t.symbol, t.position === "long" ? "롱" : "숏",
+        RESULT_KO[t.result], t.pnl,
+        t.entry_price ?? "", t.tp_price ?? "", t.sl_price ?? "",
+        plan ? plan.r.toFixed(2) : "",
+        (t.tags || []).join(" "), t.memo || "",
+      ].map(cell).join(",");
+    });
 
   const csv = "﻿" + [head.map(cell).join(","), ...body].join("\r\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));

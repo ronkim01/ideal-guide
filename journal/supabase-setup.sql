@@ -15,10 +15,20 @@ create table if not exists public.trades (
   position   text not null check (position in ('long','short')),
   pnl        numeric(16,4) not null default 0,            -- 실현 손익 (손실은 음수)
   result     text not null check (result in ('win','draw','lose')),
+  entry_price numeric(20,8),                              -- 진입가
+  tp_price    numeric(20,8),                              -- 목표가 (Take Profit)
+  sl_price    numeric(20,8),                              -- 손절가 (Stop Loss)
   memo       text,                                        -- 매매 복기 (분할 매수·매도 내역 포함)
   tags       text[] not null default '{}',
   created_at timestamptz not null default now()
 );
+
+-- 1-1) 매매 계획 컬럼 추가
+--     ★ 이미 표를 만드신 분은 이 세 줄 때문에 전체를 다시 실행하셔도 안전합니다.
+--       (앱에서는 필수 입력이지만, 예전 기록이 지워지지 않도록 DB는 비어 있어도 허용합니다)
+alter table public.trades add column if not exists entry_price numeric(20,8);
+alter table public.trades add column if not exists tp_price    numeric(20,8);
+alter table public.trades add column if not exists sl_price    numeric(20,8);
 
 -- 2) 조회 성능용 인덱스 (날짜 내림차순 조회가 기본)
 create index if not exists trades_user_date_idx

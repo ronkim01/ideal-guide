@@ -63,6 +63,18 @@ async function signIn() {
   return { token: auth.access_token, userId: auth.user.id };
 }
 
+/* 진입가·TP·SL로 계획 손익비(R) — 앱 화면과 같은 계산식 */
+function planOf(t) {
+  const n = (v) => (v === null || v === undefined || String(v).trim() === "" ? NaN : Number(v));
+  const e = n(t.entry_price), tp = n(t.tp_price), sl = n(t.sl_price);
+  if (![e, tp, sl].every(Number.isFinite)) return null;
+  const long = t.position === "long";
+  const reward = long ? tp - e : e - tp;
+  const risk = long ? e - sl : sl - e;
+  if (!(risk > 0) || !(reward > 0)) return null;
+  return reward / risk;
+}
+
 /* ── 집계 (앱 화면과 같은 계산식) ────────────────────────────── */
 function summarize(trades) {
   const num = (t) => Number(t.pnl);
@@ -111,10 +123,15 @@ function summarize(trades) {
     if (t.result === "lose") byDow[d].l++;
   }
 
+  const plans = trades.map(planOf).filter((v) => v !== null);
+  const avgPlannedR = plans.length ? plans.reduce((a, b) => a + b, 0) / plans.length : null;
+
   const r2 = (v) => Math.round(v * 100) / 100;
   return {
     month,
     trade_count: trades.length,
+    planned_count: plans.length,
+    avg_planned_rr: avgPlannedR === null ? null : r2(avgPlannedR),
     total: r2(trades.reduce((s, t) => s + num(t), 0)),
     wins: wins.length, loses: loses.length, draws: draws.length,
     win_rate: r2(winRate * 100),
@@ -172,6 +189,8 @@ const SYSTEM = `당신은 트레이더의 매매 기록을 읽고 복기를 도�
 - 위로하지 않습니다. 손실을 만든 습관을 이름 붙여 지적하고, 근거가 되는 날짜·코인·태그를 인용합니다.
 - 근거가 약하면 패턴으로 넣지 않습니다. 3개를 억지로 채우지 말고 확실한 것만 씁니다.
 - 승률이 높아도 기대값이 음수면 그 점을 가장 먼저 지적합니다.
+- 각 매매에는 진입 전에 세운 계획 손익비(R)가 있습니다. **계획한 손익비(avg_planned_rr)와 실제로 나온 손익비(payoff)의 격차**를 반드시 살피세요. 계획이 2R인데 실제가 0.8이라면, 방향을 맞히고도 계획대로 실행하지 못했다는 뜻입니다. 어느 매매에서 그 격차가 벌어졌는지 날짜와 코인으로 짚어주세요.
+- 계획 손익비가 1R 미만인 매매(손절폭이 목표폭보다 큰 매매)가 있으면, 진입 자체가 불리했던 것이므로 따로 지적하세요.
 - 복기란(memo)에 적힌 본인의 말과 실제 손익이 어긋나는 지점을 찾아내면 가장 좋은 복기입니다.
 - 한국어로, 담백하게 씁니다.`;
 
@@ -180,7 +199,8 @@ const { token, userId } = await signIn();
 
 const trades = await api(
   `/rest/v1/trades?traded_at=gte.${from}&traded_at=lte.${to}` +
-  `&select=traded_at,symbol,position,pnl,result,memo,tags,created_at&order=traded_at.asc`,
+  `&select=traded_at,symbol,position,pnl,result,entry_price,tp_price,sl_price,memo,tags,created_at` +
+  `&order=traded_at.asc`,
   { token }
 );
 
@@ -198,12 +218,14 @@ if (DRY) {
   process.exit(0);
 }
 
-const tradeLines = trades.map((t) =>
-  `${t.traded_at} | ${t.symbol} | ${t.position === "long" ? "롱" : "숏"} | ` +
-  `${Number(t.pnl) >= 0 ? "+" : ""}${t.pnl} | ${{ win: "승", draw: "무", lose: "패" }[t.result]}` +
-  `${(t.tags || []).length ? ` | 태그: ${t.tags.join(",")}` : ""}` +
-  `${t.memo ? ` | 복기: ${t.memo.replace(/\s+/g, " ").slice(0, 300)}` : ""}`
-).join("\n");
+const tradeLines = trades.map((t) => {
+  const r = planOf(t);
+  return `${t.traded_at} | ${t.symbol} | ${t.position === "long" ? "롱" : "숏"} | ` +
+    `${Number(t.pnl) >= 0 ? "+" : ""}${t.pnl} | ${{ win: "승", draw: "무", lose: "패" }[t.result]}` +
+    `${r !== null ? ` | 계획 ${r.toFixed(2)}R (진입 ${t.entry_price} / TP ${t.tp_price} / SL ${t.sl_price})` : " | 계획 없음"}` +
+    `${(t.tags || []).length ? ` | 태그: ${t.tags.join(",")}` : ""}` +
+    `${t.memo ? ` | 복기: ${t.memo.replace(/\s+/g, " ").slice(0, 300)}` : ""}`;
+}).join("\n");
 
 const user = `${yy}년 ${mm}월 매매 기록을 복기해주세요. 단위는 USDT입니다.
 
@@ -211,7 +233,7 @@ const user = `${yy}년 ${mm}월 매매 기록을 복기해주세요. 단위는 U
 ${JSON.stringify(stats, null, 2)}
 
 ## 매매 내역 (${trades.length}건)
-날짜 | 코인 | 포지션 | 손익 | 결과 | 태그 | 본인이 적은 복기
+날짜 | 코인 | 포지션 | 손익 | 결과 | 계획 손익비(진입/TP/SL) | 태그 | 본인이 적은 복기
 ${tradeLines}
 
 위 기록에서 반복되는 행동 패턴을 찾아내고, 다음 달에 지킬 규칙을 제안해주세요.`;

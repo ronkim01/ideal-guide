@@ -87,6 +87,28 @@
       </label>
     </div>
 
+    <!-- 매매 계획 — 진입가·TP·SL로 계획 손익비를 계산한다 -->
+    <fieldset class="plan">
+      <legend class="plan-legend">매매 계획</legend>
+      <div class="plan-grid">
+        <label class="field">
+          <span>진입가</span>
+          <input id="fEntry" type="number" step="any" inputmode="decimal" placeholder="67200" required />
+        </label>
+        <label class="field">
+          <span>TP <em>목표가</em></span>
+          <input id="fTp" type="number" step="any" inputmode="decimal" placeholder="69000" required />
+        </label>
+        <label class="field">
+          <span>SL <em>손절가</em></span>
+          <input id="fSl" type="number" step="any" inputmode="decimal" placeholder="66300" required />
+        </label>
+      </div>
+      <div id="rrPreview" class="rr" role="status" aria-live="polite">
+        <span class="rr-hint">진입가 · TP · SL을 넣으면 계획 손익비가 계산됩니다</span>
+      </div>
+    </fieldset>
+
     <label class="field">
       <span>매매 복기 <em>(분할 매수·매도, 진입 근거, 감정 등)</em></span>
       <textarea id="fMemo" rows="2" placeholder="예) 4h 저항 돌파 확인 후 3회 분할 진입, 목표가 전 조급하게 청산"></textarea>
