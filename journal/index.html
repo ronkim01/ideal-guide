@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)" />
 <title>매매일지</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📓</text></svg>" />
-<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="styles.css?v=2026.09.23a" />
 </head>
 <body>
 
@@ -141,11 +141,13 @@
   <footer class="foot">
     <button id="csvBtn" class="btn btn-ghost btn-sm" type="button">⬇ CSV 내보내기</button>
     <span id="syncMsg" class="foot-msg"></span>
+    <span id="verMsg" class="foot-msg" title="지금 돌고 있는 앱 버전"></span>
   </footer>
 </div>
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script type="module" src="app.js"></script>
+<!-- ?v= 를 붙여야 브라우저가 옛 파일을 캐시에서 꺼내 쓰지 않는다 -->
+<script type="module" src="app.js?v=2026.09.23a"></script>
 </body>
 </html>

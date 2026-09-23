@@ -7,6 +7,9 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
+// 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
+const APP_VERSION = "2026.09.23a";
+
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
 
@@ -212,6 +215,7 @@ function readPlanInputs() {
 
 /* 입력하는 즉시 계획 손익비를 보여준다 — 기록 전에 스스로 판단할 수 있게 */
 function renderRR() {
+  clearTimeout(rrTimer);
   const el = $("#rrPreview");
   const v = readPlanInputs();
 
@@ -233,7 +237,29 @@ function renderRR() {
     (v.r < 1 ? `<span class="rr-note">손절폭이 목표폭보다 큽니다</span>` : "");
 }
 
-["fEntry", "fTp", "fSl"].forEach((id) => $("#" + id).addEventListener("input", renderRR));
+const PLAN_INPUTS = ["fEntry", "fTp", "fSl"];
+
+/* 타이핑 중에는 잠깐 기다렸다 계산한다.
+   "66300"을 치는 동안 "6", "66"으로 계산돼 0.03R 같은 값과 빨간 경고가
+   번쩍이면 오히려 혼란스럽다. 손을 멈추면 바로 나온다. */
+let rrTimer;
+function renderRRSoon() {
+  clearTimeout(rrTimer);
+  rrTimer = setTimeout(renderRR, 260);
+}
+
+// 한 요소가 없어도 모듈 전체가 죽지 않도록 각각 확인해서 건다
+PLAN_INPUTS.forEach((id) => {
+  const el = $("#" + id);
+  if (!el) return console.warn(`[매매일지] #${id} 입력칸을 찾지 못했습니다`);
+  el.addEventListener("input", renderRRSoon);
+  el.addEventListener("change", renderRR); // 칸을 벗어나면 즉시
+});
+
+// 폼 전체에도 한 번 더 걸어둔다 (위 배선이 실패해도 입력하는 즉시 계산되도록)
+form.addEventListener("input", (e) => {
+  if (PLAN_INPUTS.includes(e.target && e.target.id)) renderRRSoon();
+});
 
 $$(".seg-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -1038,6 +1064,7 @@ $("#csvBtn").addEventListener("click", () => {
 });
 
 /* ── 시작 ─────────────────────────────────── */
+$("#verMsg").textContent = "v" + APP_VERSION;
 $("#currency").value = state.currency;
 $("#unitHint").textContent = state.currency === "KRW" ? "(원)" : "(USDT)";
 resetForm();
