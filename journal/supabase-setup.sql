@@ -89,7 +89,15 @@ create policy "내 리포트만 삭제" on public.journal_reports
   for delete to authenticated using (auth.uid() = user_id);
 
 -- ============================================================
--- 6) 내 계정 만들기 (SQL이 아니라 대시보드에서)
+-- 6) 스키마 캐시 갱신
+--    ★ 이게 없으면 칸을 새로 만들어도 앱에서
+--      "Could not find the 'entry_price' column ... in the schema cache"
+--      에러가 납니다. 표 구조를 바꿀 때마다 마지막에 실행하세요.
+-- ============================================================
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 7) 내 계정 만들기 (SQL이 아니라 대시보드에서)
 --    Authentication → Users → "Add user" → "Create new user"
 --    · 이메일 / 비밀번호 입력
 --    · "Auto Confirm User" 체크  ← 체크해야 메일 인증 없이 바로 로그인됩니다

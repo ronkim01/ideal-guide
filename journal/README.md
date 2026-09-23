@@ -18,6 +18,14 @@
 ### 1) 테이블 만들기
 Supabase 대시보드 → **SQL Editor** → [`supabase-setup.sql`](./supabase-setup.sql) 내용을 붙여넣고 **Run**.
 
+> **이미 한 번 실행하셨다면** 다시 실행하세요. 진입가·TP·SL 칸이 나중에 추가됐습니다.
+> 없는 칸만 붙이므로 기존 기록은 지워지지 않습니다.
+> 그 세 칸만 추가하려면 [`migrations/2026-09-23-add-plan-columns.sql`](./migrations/2026-09-23-add-plan-columns.sql) 만 실행해도 됩니다.
+
+> ⚠️ 앱에서 `Could not find the 'entry_price' column of 'trades' in the schema cache` 오류가 나면
+> 그 칸이 아직 없다는 뜻입니다. 위 SQL을 실행하세요. 스크립트 마지막의
+> `notify pgrst, 'reload schema';` 가 Supabase에게 새 칸을 알려주는 명령이라 꼭 함께 실행돼야 합니다.
+
 ### 2) 내 계정 만들기
 Supabase 대시보드 → **Authentication → Users → Add user → Create new user**
 - 이메일 / 비밀번호 입력
