@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.23a";
+const APP_VERSION = "2026.09.23b";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -22,6 +22,8 @@ const state = {
   side: "long",
   tags: [],
   currency: localStorage.getItem("mj.currency") || "USDT",
+  account: localStorage.getItem("mj.account") || "",
+  maxLossPct: localStorage.getItem("mj.maxLossPct") || "1",
   filters: { period: "all", symbol: "all", side: "all", result: "all" },
 };
 
@@ -55,6 +57,12 @@ const toneOf = (n) => (n > 0 ? "up" : n < 0 ? "down" : "flat");
 
 const fmtPrice = (v) => Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 8 });
 
+/* 주문 수량은 자릿수를 실제 주문할 만큼만 — 큰 수는 짧게, 작은 코인은 촘촘하게 */
+const fmtQty = (v) =>
+  Number(v).toLocaleString("ko-KR", {
+    maximumFractionDigits: v >= 100 ? 2 : v >= 1 ? 4 : 6,
+  });
+
 /* 빈 칸과 null을 숫자 0으로 읽지 않도록 (Number("") 도 Number(null) 도 0이 된다) */
 const numOf = (v) =>
   v === null || v === undefined || String(v).trim() === "" ? NaN : Number(v);
@@ -77,6 +85,22 @@ function checkPlan(entry, tp, sl, side) {
       : "숏은 목표가(TP)가 진입가보다 낮아야 합니다" };
   }
   return { state: "ok", reward, risk, r: reward / risk };
+}
+
+/* 비중 계산 — 손절 퍼센트로 "한 번에 얼마를 걸지"를 역산한다.
+     손절%    = 손절폭 ÷ 진입가 × 100
+     진입 비중 = 계좌 × 최대손실률% ÷ 손절%      (100이 서로 상쇄된다)
+     수량     = 진입 비중 ÷ 진입가
+   계좌·최대손실률이 없으면 손절%만 돌려준다. */
+function sizePosition(plan, entry, account, maxLossPct) {
+  const slPct = (plan.risk / entry) * 100;
+  const out = { slPct };
+  if (!(account > 0) || !(maxLossPct > 0)) return out;
+  out.riskAmount = account * (maxLossPct / 100);
+  out.notional = (account * maxLossPct) / slPct;
+  out.qty = out.notional / entry;
+  out.leverage = out.notional / account;
+  return out;
 }
 
 /* 저장된 기록 한 건의 계획 손익비 (셋 중 하나라도 없으면 null) */
@@ -229,15 +253,57 @@ function renderRR() {
     el.innerHTML = `<span class="rr-msg">⚠ ${esc(v.msg)}</span>`;
     return;
   }
+  const entry = numOf($("#fEntry").value);
+  const sz = sizePosition(v, entry, numOf($("#fAccount").value), numOf($("#fMaxLoss").value));
+  const sym = ($("#fSymbol").value || "").trim().toUpperCase();
+
   el.className = "rr " + (v.r >= 2 ? "is-good" : v.r >= 1 ? "" : "is-thin");
-  el.innerHTML =
-    `<span class="rr-label">계획 손익비</span>
-     <span class="rr-value">${v.r.toFixed(2)}<em>R</em></span>
-     <span class="rr-detail">목표 +${fmtPrice(v.reward)} · 손절 −${fmtPrice(v.risk)}</span>` +
-    (v.r < 1 ? `<span class="rr-note">손절폭이 목표폭보다 큽니다</span>` : "");
+  el.innerHTML = `
+    <div class="rr-grid">
+      <div class="rr-cell">
+        <span class="rr-key">계획 손익비</span>
+        <span class="rr-num">${v.r.toFixed(2)}<em>R</em></span>
+        <span class="rr-sub">목표 +${fmtPrice(v.reward)} · 손절 −${fmtPrice(v.risk)}</span>
+      </div>
+      <div class="rr-cell">
+        <span class="rr-key">손절</span>
+        <span class="rr-num">${sz.slPct.toFixed(2)}<em>%</em></span>
+        <span class="rr-sub">진입가 대비</span>
+      </div>
+      <div class="rr-cell">
+        <span class="rr-key">진입 비중</span>
+        <span class="rr-num">${sz.notional === undefined ? "—" : money(sz.notional)}</span>
+        <span class="rr-sub">${
+          sz.notional === undefined
+            ? "계좌 · 최대 손실률 입력"
+            : `≈ ${fmtQty(sz.qty)}${sym ? " " + esc(sym) : "개"}`
+        }</span>
+      </div>
+    </div>` +
+    (v.r < 1 ? `<div class="rr-note">손절폭이 목표폭보다 큽니다</div>` : "") +
+    (sz.leverage > 1
+      ? `<div class="rr-note">계좌보다 큰 금액입니다 — 레버리지 ${sz.leverage.toFixed(2)}배 필요</div>`
+      : "") +
+    (sz.riskAmount !== undefined
+      ? `<div class="rr-foot">이 매매에서 잃을 수 있는 최대 금액 ${money(sz.riskAmount)}</div>`
+      : "");
 }
 
-const PLAN_INPUTS = ["fEntry", "fTp", "fSl"];
+const PLAN_INPUTS = ["fEntry", "fTp", "fSl", "fAccount", "fMaxLoss", "fSymbol"];
+
+/* 계좌·최대 손실률은 이 브라우저에 기억해둔다 (다음 매매에 자동으로 채워짐) */
+function rememberSizing() {
+  state.account = $("#fAccount").value;
+  state.maxLossPct = $("#fMaxLoss").value;
+  try {
+    localStorage.setItem("mj.account", state.account);
+    localStorage.setItem("mj.maxLossPct", state.maxLossPct);
+  } catch {}
+}
+["fAccount", "fMaxLoss"].forEach((id) => {
+  const el = $("#" + id);
+  if (el) el.addEventListener("input", rememberSizing);
+});
 
 /* 타이핑 중에는 잠깐 기다렸다 계산한다.
    "66300"을 치는 동안 "6", "66"으로 계산돼 0.03R 같은 값과 빨간 경고가
@@ -285,6 +351,8 @@ function resetForm() {
     b.classList.toggle("is-on", on);
     b.setAttribute("aria-checked", String(on));
   });
+  $("#fAccount").value = state.account;   // form.reset()이 비우므로 기억한 값을 되살린다
+  $("#fMaxLoss").value = state.maxLossPct;
   $("#entryTitle").textContent = "✍️ 매매 기록";
   $("#saveBtn").textContent = "기록하기";
   $("#cancelEdit").hidden = true;
@@ -380,6 +448,7 @@ $("#currency").addEventListener("change", (e) => {
   state.currency = e.target.value;
   try { localStorage.setItem("mj.currency", state.currency); } catch {}
   $("#unitHint").textContent = state.currency === "KRW" ? "(원)" : "(USDT)";
+  $("#acctUnit").textContent = state.currency === "KRW" ? "(원)" : "(USDT)";
   render();
 });
 
@@ -1067,6 +1136,7 @@ $("#csvBtn").addEventListener("click", () => {
 $("#verMsg").textContent = "v" + APP_VERSION;
 $("#currency").value = state.currency;
 $("#unitHint").textContent = state.currency === "KRW" ? "(원)" : "(USDT)";
+$("#acctUnit").textContent = state.currency === "KRW" ? "(원)" : "(USDT)";
 resetForm();
 
 const { data: { session } } = await supabase.auth.getSession();

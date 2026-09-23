@@ -139,31 +139,53 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
+.plan-grid-2 { grid-template-columns: 1fr 1fr; margin-top: 9px; }
+.plan-memo {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
 
-/* 계획 손익비 미리보기 — 입력하는 즉시 반응 */
+/* 계산 결과 — 입력하는 즉시 반응 */
 .rr {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 9px;
   margin-top: 10px;
-  padding: 8px 11px;
+  padding: 10px 12px;
   border-radius: 8px;
   background: var(--field);
   border: 1px solid var(--border);
   font-size: 0.8rem;
   min-height: 38px;
 }
-.rr-hint, .rr-detail { color: var(--muted); }
-.rr-label { color: var(--ink-2); font-weight: 600; }
-.rr-value { font-size: 1.28rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
-.rr-value em { font-style: normal; font-size: 0.72rem; font-weight: 600; margin-left: 1px; }
-.rr-note, .rr-msg { color: var(--profit); font-weight: 600; }
+.rr-hint { color: var(--muted); }
 
+.rr-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.rr-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rr-key { font-size: 0.7rem; color: var(--ink-2); font-weight: 600; }
+.rr-num {
+  font-size: 1.24rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rr-num em { font-style: normal; font-size: 0.7rem; font-weight: 600; margin-left: 1px; }
+.rr-sub { font-size: 0.68rem; color: var(--muted); overflow-wrap: anywhere; }
+
+.rr-note, .rr-msg { color: var(--profit); font-weight: 600; }
+.rr-note { margin-top: 8px; font-size: 0.75rem; }
+.rr-foot {
+  margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-size: 0.73rem; color: var(--muted);
+}
+
+/* 손익비에 따라 테두리 색만 바꾼다 — 숫자는 먹색 유지 */
 .rr.is-good { border-color: var(--good); background: rgba(12, 163, 12, 0.07); }
-.rr.is-good .rr-value { color: var(--good); }
+.rr.is-good .rr-cell:first-child .rr-num { color: var(--good); }
 .rr.is-thin { border-color: var(--profit); }
-.rr.is-thin .rr-value { color: var(--profit); }
+.rr.is-thin .rr-cell:first-child .rr-num { color: var(--profit); }
 .rr.is-bad { border-color: var(--profit); background: rgba(227, 73, 72, 0.08); }
 
 /* 목록 행의 계획 손익비 배지 */
@@ -459,8 +481,11 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   .plan { padding: 9px 10px 11px; }
   .plan-grid { gap: 6px; }
   .plan-grid input { padding: 8px 8px; font-size: 0.88rem; }
-  .rr { gap: 3px 7px; }
-  .rr-value { font-size: 1.15rem; }
+  .plan-grid-2 { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .rr { padding: 9px 10px; }
+  .rr-grid { grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .rr-cell:first-child { grid-column: 1 / -1; }
+  .rr-num { font-size: 1.12rem; }
   .pvr-row { grid-template-columns: auto 1fr 46px; gap: 8px; }
   .pvr-name { font-size: 0.74rem; }
   .row { grid-template-columns: 46px 1fr auto; gap: 8px; }

@@ -104,6 +104,18 @@
           <input id="fSl" type="number" step="any" inputmode="decimal" placeholder="66300" required />
         </label>
       </div>
+      <div class="plan-grid plan-grid-2">
+        <label class="field">
+          <span>계좌 <em id="acctUnit">(USDT)</em></span>
+          <input id="fAccount" type="number" step="any" inputmode="decimal" placeholder="10000" />
+        </label>
+        <label class="field">
+          <span>최대 손실률 <em>(%)</em></span>
+          <input id="fMaxLoss" type="number" step="any" inputmode="decimal" placeholder="1" />
+        </label>
+        <p class="plan-memo">이 둘은 기억해뒀다가 다음에 자동으로 채워집니다</p>
+      </div>
+
       <div id="rrPreview" class="rr" role="status" aria-live="polite">
         <span class="rr-hint">진입가 · TP · SL을 넣으면 계획 손익비가 계산됩니다</span>
       </div>
