@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.23b";
+const APP_VERSION = "2026.09.23c";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -24,6 +24,7 @@ const state = {
   currency: localStorage.getItem("mj.currency") || "USDT",
   account: localStorage.getItem("mj.account") || "",
   maxLossPct: localStorage.getItem("mj.maxLossPct") || "1",
+  leverage: localStorage.getItem("mj.leverage") || "1",
   filters: { period: "all", symbol: "all", side: "all", result: "all" },
 };
 
@@ -92,14 +93,18 @@ function checkPlan(entry, tp, sl, side) {
      진입 비중 = 계좌 × 최대손실률% ÷ 손절%      (100이 서로 상쇄된다)
      수량     = 진입 비중 ÷ 진입가
    계좌·최대손실률이 없으면 손절%만 돌려준다. */
-function sizePosition(plan, entry, account, maxLossPct) {
+function sizePosition(plan, entry, account, maxLossPct, leverage) {
   const slPct = (plan.risk / entry) * 100;
   const out = { slPct };
   if (!(account > 0) || !(maxLossPct > 0)) return out;
-  out.riskAmount = account * (maxLossPct / 100);
-  out.notional = (account * maxLossPct) / slPct;
-  out.qty = out.notional / entry;
-  out.leverage = out.notional / account;
+
+  const lev = leverage > 0 ? leverage : 1;
+  out.riskAmount = account * (maxLossPct / 100);   // 손절에 걸렸을 때 잃는 돈
+  out.notional = (account * maxLossPct) / slPct;   // 포지션 전체 크기
+  out.qty = out.notional / entry;                  // 주문 수량
+  out.lev = lev;
+  out.margin = out.notional / lev;                 // 거래소에 실제로 넣는 돈
+  out.needLev = out.notional / account;            // 계좌로 감당하려면 필요한 최소 배수
   return out;
 }
 
@@ -254,7 +259,8 @@ function renderRR() {
     return;
   }
   const entry = numOf($("#fEntry").value);
-  const sz = sizePosition(v, entry, numOf($("#fAccount").value), numOf($("#fMaxLoss").value));
+  const sz = sizePosition(v, entry, numOf($("#fAccount").value),
+                          numOf($("#fMaxLoss").value), numOf($("#fLeverage").value));
   const sym = ($("#fSymbol").value || "").trim().toUpperCase();
 
   el.className = "rr " + (v.r >= 2 ? "is-good" : v.r >= 1 ? "" : "is-thin");
@@ -279,28 +285,37 @@ function renderRR() {
             : `≈ ${fmtQty(sz.qty)}${sym ? " " + esc(sym) : "개"}`
         }</span>
       </div>
+      <div class="rr-cell is-lead">
+        <span class="rr-key">증거금</span>
+        <span class="rr-num">${sz.margin === undefined ? "—" : money(sz.margin)}</span>
+        <span class="rr-sub">${
+          sz.margin === undefined ? "거래소에 넣을 돈" : `레버리지 ${fmtQty(sz.lev)}배 기준`
+        }</span>
+      </div>
     </div>` +
     (v.r < 1 ? `<div class="rr-note">손절폭이 목표폭보다 큽니다</div>` : "") +
-    (sz.leverage > 1
-      ? `<div class="rr-note">계좌보다 큰 금액입니다 — 레버리지 ${sz.leverage.toFixed(2)}배 필요</div>`
+    (sz.margin !== undefined && sz.margin > (numOf($("#fAccount").value) || 0)
+      ? `<div class="rr-note">증거금이 계좌보다 큽니다 — 레버리지를 ${Math.ceil(sz.needLev)}배 이상으로 올리거나 손절폭을 넓히세요</div>`
       : "") +
     (sz.riskAmount !== undefined
-      ? `<div class="rr-foot">이 매매에서 잃을 수 있는 최대 금액 ${money(sz.riskAmount)}</div>`
+      ? `<div class="rr-foot">손절에 걸리면 잃는 금액 ${money(sz.riskAmount)}</div>`
       : "");
 }
 
-const PLAN_INPUTS = ["fEntry", "fTp", "fSl", "fAccount", "fMaxLoss", "fSymbol"];
+const PLAN_INPUTS = ["fEntry", "fTp", "fSl", "fAccount", "fMaxLoss", "fLeverage", "fSymbol"];
 
 /* 계좌·최대 손실률은 이 브라우저에 기억해둔다 (다음 매매에 자동으로 채워짐) */
 function rememberSizing() {
   state.account = $("#fAccount").value;
   state.maxLossPct = $("#fMaxLoss").value;
+  state.leverage = $("#fLeverage").value;
   try {
     localStorage.setItem("mj.account", state.account);
     localStorage.setItem("mj.maxLossPct", state.maxLossPct);
+    localStorage.setItem("mj.leverage", state.leverage);
   } catch {}
 }
-["fAccount", "fMaxLoss"].forEach((id) => {
+["fAccount", "fMaxLoss", "fLeverage"].forEach((id) => {
   const el = $("#" + id);
   if (el) el.addEventListener("input", rememberSizing);
 });
@@ -353,6 +368,7 @@ function resetForm() {
   });
   $("#fAccount").value = state.account;   // form.reset()이 비우므로 기억한 값을 되살린다
   $("#fMaxLoss").value = state.maxLossPct;
+  $("#fLeverage").value = state.leverage;
   $("#entryTitle").textContent = "✍️ 매매 기록";
   $("#saveBtn").textContent = "기록하기";
   $("#cancelEdit").hidden = true;

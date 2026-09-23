@@ -104,7 +104,7 @@
           <input id="fSl" type="number" step="any" inputmode="decimal" placeholder="66300" required />
         </label>
       </div>
-      <div class="plan-grid plan-grid-2">
+      <div class="plan-grid plan-grid-3">
         <label class="field">
           <span>계좌 <em id="acctUnit">(USDT)</em></span>
           <input id="fAccount" type="number" step="any" inputmode="decimal" placeholder="10000" />
@@ -113,7 +113,11 @@
           <span>최대 손실률 <em>(%)</em></span>
           <input id="fMaxLoss" type="number" step="any" inputmode="decimal" placeholder="1" />
         </label>
-        <p class="plan-memo">이 둘은 기억해뒀다가 다음에 자동으로 채워집니다</p>
+        <label class="field">
+          <span>레버리지 <em>(배)</em></span>
+          <input id="fLeverage" type="number" step="any" min="1" inputmode="decimal" placeholder="10" />
+        </label>
+        <p class="plan-memo">이 셋은 기억해뒀다가 다음에 자동으로 채워집니다</p>
       </div>
 
       <div id="rrPreview" class="rr" role="status" aria-live="polite">

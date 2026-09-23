@@ -139,7 +139,7 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
-.plan-grid-2 { grid-template-columns: 1fr 1fr; margin-top: 9px; }
+.plan-grid-3 { grid-template-columns: repeat(3, 1fr); margin-top: 9px; }
 .plan-memo {
   grid-column: 1 / -1;
   margin: 0;
@@ -161,9 +161,12 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 
 .rr-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
+/* 거래소에 실제로 넣는 숫자 — 나머지보다 한 단계 도드라지게 */
+.rr-cell.is-lead { padding-left: 11px; border-left: 2px solid var(--ink); }
+.rr-cell.is-lead .rr-key { color: var(--ink); }
 .rr-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rr-key { font-size: 0.7rem; color: var(--ink-2); font-weight: 600; }
 .rr-num {
@@ -481,11 +484,11 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   .plan { padding: 9px 10px 11px; }
   .plan-grid { gap: 6px; }
   .plan-grid input { padding: 8px 8px; font-size: 0.88rem; }
-  .plan-grid-2 { grid-template-columns: 1fr 1fr; gap: 6px; }
   .rr { padding: 9px 10px; }
-  .rr-grid { grid-template-columns: 1fr 1fr; gap: 8px 10px; }
-  .rr-cell:first-child { grid-column: 1 / -1; }
-  .rr-num { font-size: 1.12rem; }
+  .plan-grid-3 { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .rr-grid { grid-template-columns: 1fr 1fr; gap: 9px 10px; }
+  .rr-num { font-size: 1.08rem; }
+  .rr-cell.is-lead { padding-left: 9px; }
   .pvr-row { grid-template-columns: auto 1fr 46px; gap: 8px; }
   .pvr-name { font-size: 0.74rem; }
   .row { grid-template-columns: 46px 1fr auto; gap: 8px; }
