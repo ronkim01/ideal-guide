@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.23c";
+const APP_VERSION = "2026.09.24a";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -102,6 +102,7 @@ function sizePosition(plan, entry, account, maxLossPct, leverage) {
   out.riskAmount = account * (maxLossPct / 100);   // 손절에 걸렸을 때 잃는 돈
   out.notional = (account * maxLossPct) / slPct;   // 포지션 전체 크기
   out.qty = out.notional / entry;                  // 주문 수량
+  out.rewardAmount = plan.reward * out.qty;        // TP에 닿았을 때 버는 돈
   out.lev = lev;
   out.margin = out.notional / lev;                 // 거래소에 실제로 넣는 돈
   out.needLev = out.notional / account;            // 계좌로 감당하려면 필요한 최소 배수
@@ -298,7 +299,11 @@ function renderRR() {
       ? `<div class="rr-note">증거금이 계좌보다 큽니다 — 레버리지를 ${Math.ceil(sz.needLev)}배 이상으로 올리거나 손절폭을 넓히세요</div>`
       : "") +
     (sz.riskAmount !== undefined
-      ? `<div class="rr-foot">손절에 걸리면 잃는 금액 ${money(sz.riskAmount)}</div>`
+      ? `<div class="rr-foot">
+           <span>익절하면 <b class="up">${money(sz.rewardAmount, { sign: true })}</b></span>
+           <span class="rr-foot-sep">·</span>
+           <span>손절하면 <b class="down">−${money(sz.riskAmount)}</b></span>
+         </div>`
       : "");
 }
 
