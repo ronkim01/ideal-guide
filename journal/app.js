@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.26c";
+const APP_VERSION = "2026.09.26d";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -90,17 +90,29 @@ function checkPlan(entry, tp, sl, side) {
   return { state: "ok", reward, risk, r: reward / risk };
 }
 
+/* 기본 비중 — 마지막(가장 깊은) 구간에 절반, 나머지가 나머지 절반을 나눠 갖는다.
+     1칸 → 100
+     2칸 → 50 · 50
+     3칸 → 25 · 25 · 50
+     4칸 → 16.7 · 16.7 · 16.7 · 50
+   칸을 지우면 남은 칸 수에 맞춰 자동으로 다시 나뉜다. */
+function defaultWeights(n) {
+  if (n <= 1) return [1];
+  const rest = 0.5 / (n - 1);
+  return Array.from({ length: n }, (_, i) => (i === n - 1 ? 0.5 : rest));
+}
+
 /* 구간별 비중을 실제 비율로 바꾼다.
-   전부 비어 있으면 균등 분배. 하나라도 적혀 있으면 적힌 값끼리의 비율로 나눈다
+   전부 비어 있으면 위의 기본 비중. 하나라도 적혀 있으면 적힌 값끼리의 비율로 나눈다
    (1 / 1 / 2 로 적으면 25% / 25% / 50%). */
 function legWeights(legs) {
   const typed = legs.map((l) => numOf(l.weight));
   const anyTyped = typed.some((w) => Number.isFinite(w) && w > 0);
-  const raw = anyTyped
-    ? typed.map((w) => (Number.isFinite(w) && w > 0 ? w : 0))
-    : legs.map(() => 1);
+  if (!anyTyped) return defaultWeights(legs.length);
+
+  const raw = typed.map((w) => (Number.isFinite(w) && w > 0 ? w : 0));
   const sum = raw.reduce((a, b) => a + b, 0);
-  return sum > 0 ? raw.map((w) => w / sum) : legs.map(() => 1 / legs.length);
+  return sum > 0 ? raw.map((w) => w / sum) : defaultWeights(legs.length);
 }
 
 /* 구간들을 하나의 진입가로 합친다.
@@ -300,6 +312,7 @@ function readLegs() {
    (입력 중 다시 그리면 커서가 튄다) */
 function renderLegs() {
   const multi = state.legs.length > 1;
+  const defaults = defaultWeights(state.legs.length);
   $("#legRows").innerHTML = state.legs.map((leg, i) => `
     <div class="leg-row" data-i="${i}">
       <span class="leg-no">${i + 1}</span>
@@ -307,14 +320,15 @@ function renderLegs() {
              placeholder="진입가" value="${esc(leg.price)}" aria-label="${i + 1}구간 진입가" />
       ${multi ? `<div class="leg-w">
         <input class="leg-weight" type="number" step="any" inputmode="decimal" min="0"
-               placeholder="균등" value="${esc(leg.weight)}" aria-label="${i + 1}구간 비중" />
+               placeholder="${(defaults[i] * 100).toFixed(defaults[i] * 100 % 1 ? 1 : 0)}"
+               value="${esc(leg.weight)}" aria-label="${i + 1}구간 비중" />
         <span class="leg-pct" data-pct="${i}">—</span>
       </div>` : `<input class="leg-weight" type="hidden" value="" />`}
       ${multi ? `<button type="button" class="leg-del" data-del-leg="${i}" aria-label="${i + 1}구간 삭제">×</button>` : ""}
     </div>`).join("");
   $("#addLeg").hidden = state.legs.length >= MAX_LEGS;
   $(".legs").classList.toggle("is-multi", multi);
-  if (multi) renderLegAvg(resolveLegs(state.legs));
+  if (multi) renderLegPcts(state.legs);
 }
 
 function readPlanInputs() {
@@ -376,18 +390,22 @@ function renderRR() {
   if (v.state === "empty") {
     el.className = "rr";
     el.innerHTML = `<span class="rr-hint">진입가 · TP · SL을 넣으면 계획 손익비가 계산됩니다</span>`;
-    renderLegAvg(resolveLegs(readLegs()));
+    renderLegPcts(readLegs());
+    renderLegAvg(resolveLegs(state.legs));
     return;
   }
   if (v.state === "bad") {
     el.className = "rr is-bad";
     el.innerHTML = `<span class="rr-msg">⚠ ${esc(v.msg)}</span>`;
+    renderLegPcts(readLegs());
+    renderLegAvg(resolveLegs(state.legs));
     return;
   }
   const entry = v.legs.avg;
   const sz = sizePosition(v, entry, numOf($("#fAccount").value),
                           numOf($("#fMaxLoss").value), numOf($("#fLeverage").value));
   const sym = ($("#fSymbol").value || "").trim().toUpperCase();
+  renderLegPcts(state.legs);
   renderLegAvg(v.legs);
 
   el.className = "rr " + (v.r >= 2 ? "is-good" : v.r >= 1 ? "" : "is-thin");
@@ -460,14 +478,16 @@ function rememberSizing() {
    번쩍이면 오히려 혼란스럽다. 손을 멈추면 바로 나온다. */
 let rrTimer;
 /* 구간이 둘 이상일 때만 평균 진입가를 보여준다 */
-function renderLegAvg(resolved) {
-  // "1 / 1 / 2" 처럼 적어도 실제로는 25/25/50% 라는 걸 각 줄에 그대로 보여준다
-  const pcts = $$("#legRows .leg-pct");
-  pcts.forEach((el, i) => {
-    const w = resolved?.weights?.[i];
-    el.textContent = w === undefined ? "—" : (w * 100).toFixed(1) + "%";
+/* 각 구간에 실제로 적용되는 비중(%)을 줄마다 써 넣는다.
+   비중은 가격과 상관없이 정해지므로 가격이 비어 있어도 항상 보인다. */
+function renderLegPcts(legs) {
+  const w = legWeights(legs);
+  $$("#legRows .leg-pct").forEach((el, i) => {
+    el.textContent = w[i] === undefined ? "—" : (w[i] * 100).toFixed(1) + "%";
   });
+}
 
+function renderLegAvg(resolved) {
   const el = $("#legAvg");
   if (!el) return;
   if (!resolved || resolved.prices.length < 2) { el.hidden = true; return; }
