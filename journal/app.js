@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.26b";
+const APP_VERSION = "2026.09.26c";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -281,6 +281,9 @@ $("#tagPicks").addEventListener("click", (e) => {
 });
 
 const MAX_LEGS = 5;
+const DEFAULT_LEGS = 3;
+/* 한 자리를 나눠 들어가는 전략들 — 고르면 구간이 3개로 펼쳐진다 */
+const MULTI_LEG_STRATEGIES = ["FVG", "오더블럭"];
 
 /* 화면의 구간 입력칸을 state로 읽어온다 */
 function readLegs() {
@@ -348,14 +351,19 @@ $("#legRows").addEventListener("click", (e) => {
   renderRR();
 });
 
-/* FVG는 세 구간으로 나눠 들어가는 전략이라 고르면 구간을 3개로 맞춘다 */
+/* FVG·오더블럭은 한 자리를 나눠 들어가는 전략이라 고르면 구간을 3개로 맞춘다.
+   단일 진입으로 되돌리면 비어 있는 구간만 접는다 (적어둔 가격은 지우지 않는다) */
 $("#fStrategy").addEventListener("change", () => {
   state.strategy = $("#fStrategy").value;
-  if (state.strategy === "FVG") {
-    readLegs();
-    while (state.legs.length < 3) state.legs.push({ price: "", weight: "" });
-    renderLegs();
+  readLegs();
+
+  if (MULTI_LEG_STRATEGIES.includes(state.strategy)) {
+    while (state.legs.length < DEFAULT_LEGS) state.legs.push({ price: "", weight: "" });
+  } else if (state.strategy === "") {
+    while (state.legs.length > 1 && !state.legs.at(-1).price.trim()) state.legs.pop();
   }
+
+  renderLegs();
   renderRR();
 });
 
