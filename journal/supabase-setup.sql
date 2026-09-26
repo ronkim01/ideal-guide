@@ -93,7 +93,47 @@ create policy "내 리포트만 삭제" on public.journal_reports
   for delete to authenticated using (auth.uid() = user_id);
 
 -- ============================================================
--- 6) 스키마 캐시 갱신
+-- 6) 스티커 메모 표
+--    (화면 오른쪽 여백에 붙여두는 메모. 매매 기록과는 별개입니다)
+-- ============================================================
+create table if not exists public.notes (
+  id         bigint generated always as identity primary key,
+  user_id    uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  body       text not null default '',
+  color      text not null default 'yellow',   -- yellow·pink·blue·green·gray
+  font_size  int  not null default 15,
+  bold       boolean not null default false,
+  pinned     boolean not null default false,   -- 켜면 스크롤해도 화면에 붙어 있다
+  x          int not null default 24,          -- 화면 위치
+  y          int not null default 120,
+  w          int not null default 240,         -- 크기
+  h          int not null default 180,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists notes_user_idx on public.notes (user_id, created_at);
+
+alter table public.notes enable row level security;
+
+drop policy if exists "내 메모만 조회" on public.notes;
+create policy "내 메모만 조회" on public.notes
+  for select to authenticated using (auth.uid() = user_id);
+
+drop policy if exists "내 메모만 추가" on public.notes;
+create policy "내 메모만 추가" on public.notes
+  for insert to authenticated with check (auth.uid() = user_id);
+
+drop policy if exists "내 메모만 수정" on public.notes;
+create policy "내 메모만 수정" on public.notes
+  for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists "내 메모만 삭제" on public.notes;
+create policy "내 메모만 삭제" on public.notes
+  for delete to authenticated using (auth.uid() = user_id);
+
+-- ============================================================
+-- 7) 스키마 캐시 갱신
 --    ★ 이게 없으면 칸을 새로 만들어도 앱에서
 --      "Could not find the 'entry_price' column ... in the schema cache"
 --      에러가 납니다. 표 구조를 바꿀 때마다 마지막에 실행하세요.
@@ -101,7 +141,7 @@ create policy "내 리포트만 삭제" on public.journal_reports
 notify pgrst, 'reload schema';
 
 -- ============================================================
--- 7) 내 계정 만들기 (SQL이 아니라 대시보드에서)
+-- 8) 내 계정 만들기 (SQL이 아니라 대시보드에서)
 --    Authentication → Users → "Add user" → "Create new user"
 --    · 이메일 / 비밀번호 입력
 --    · "Auto Confirm User" 체크  ← 체크해야 메일 인증 없이 바로 로그인됩니다

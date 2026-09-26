@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.26d";
+const APP_VERSION = "2026.09.26e";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -23,6 +23,8 @@ const state = {
   tags: [],
   legs: [{ price: "", weight: "" }],   // 진입 구간. FVG처럼 나눠 들어가면 여러 개가 된다.
   strategy: "",
+  notes: [],
+  notesShown: true,
   currency: localStorage.getItem("mj.currency") || "USDT",
   account: localStorage.getItem("mj.account") || "",
   maxLossPct: localStorage.getItem("mj.maxLossPct") || "1",
@@ -220,7 +222,7 @@ function showAuth() {
 async function showApp() {
   authView.hidden = true;
   appView.hidden = false;
-  await Promise.all([loadTrades(), loadReports()]);
+  await Promise.all([loadTrades(), loadReports(), loadNotes()]);
   render();
 }
 
@@ -683,6 +685,190 @@ function refreshSymbolList() {
   $("#symbolList").innerHTML = syms.map((s) => `<option value="${esc(s)}">`).join("");
 }
 
+/* ── 스티커 메모 ──────────────────────────────
+   화면 위에 떠 있는 포스트잇. Supabase에 저장돼 폰·PC 어디서든 같은 메모를 본다.
+   '고정(📌)'을 켜면 스크롤해도 화면에 붙어 있는다. */
+const NOTE_COLORS = ["yellow", "pink", "blue", "green", "gray"];
+const NOTE_SIZES = [13, 15, 18, 22];
+const NOTE_W = 240, NOTE_H = 180;
+
+async function loadNotes() {
+  const { data, error } = await supabase
+    .from("notes").select("*").order("created_at", { ascending: true }).limit(200);
+  // 표가 아직 없어도 앱 나머지는 멀쩡해야 한다
+  state.notes = error ? [] : (data || []);
+  renderNotes();
+  return error;
+}
+
+/* 화면이 좁아지면 메모가 밖으로 나가지 않도록 끌어당긴다 */
+function clampNote(n) {
+  const maxX = Math.max(8, window.innerWidth - (n.w || NOTE_W) - 8);
+  return { x: Math.min(Math.max(8, n.x ?? 24), maxX), y: Math.max(8, n.y ?? 120) };
+}
+
+function renderNotes() {
+  const layer = $("#noteLayer");
+  layer.hidden = !state.notesShown;
+  $("#toggleNotes").textContent = state.notesShown ? "메모 숨기기" : "메모 보기";
+  $("#toggleNotes").setAttribute("aria-pressed", String(state.notesShown));
+  if (!state.notesShown) return;
+
+  noteObserver.disconnect();   // 이전 요소들에서 0×0 보고가 오지 않도록
+  layer.innerHTML = state.notes.map((n) => {
+    const { x, y } = clampNote(n);
+    return `
+    <div class="note note-${esc(n.color)}${n.pinned ? " is-pinned" : ""}" data-id="${n.id}"
+         style="left:${x}px; top:${y}px; width:${n.w || NOTE_W}px; height:${n.h || NOTE_H}px">
+      <div class="note-bar">
+        <span class="note-grip" title="끌어서 옮기기">⠿</span>
+        <button type="button" class="note-btn${n.bold ? " is-on" : ""}" data-act="bold" title="굵게"><b>B</b></button>
+        <button type="button" class="note-btn" data-act="size" title="글씨 크기">가</button>
+        <button type="button" class="note-btn" data-act="color" title="색">●</button>
+        <button type="button" class="note-btn${n.pinned ? " is-on" : ""}" data-act="pin"
+                title="${n.pinned ? "고정 해제" : "화면에 고정"}">📌</button>
+        <button type="button" class="note-btn note-x" data-act="del" title="삭제">×</button>
+      </div>
+      <div class="note-swatches" hidden>${NOTE_COLORS.map((c) =>
+        `<button type="button" class="note-sw note-${c}" data-color="${c}" aria-label="${c}"></button>`).join("")}</div>
+      <textarea class="note-body" placeholder="메모..."
+        style="font-size:${n.font_size || 15}px; font-weight:${n.bold ? 700 : 400}">${esc(n.body || "")}</textarea>
+    </div>`;
+  }).join("");
+
+  $$("#noteLayer .note").forEach((el) => noteObserver.observe(el));
+}
+
+async function addNote() {
+  // 넓은 화면이면 본문 오른쪽 여백에, 좁으면 화면 안쪽에 놓는다
+  const wrapRight = ($(".wrap")?.getBoundingClientRect().right ?? 0) + 24;
+  const x = wrapRight + NOTE_W + 16 < window.innerWidth ? wrapRight : 16;
+  const y = 110 + state.notes.length * 26;
+
+  const { error } = await supabase.from("notes").insert({ x: Math.round(x), y, w: NOTE_W, h: NOTE_H });
+  if (error) {
+    return toast(error.message.includes("schema cache") || error.code === "PGRST205"
+      ? "메모 표가 아직 없습니다. supabase-setup.sql을 실행하세요"
+      : "메모 추가 실패: " + error.message);
+  }
+  state.notesShown = true;
+  saveNotesShown();
+  await loadNotes();
+  $$("#noteLayer .note-body").at(-1)?.focus();
+}
+
+/* 저장은 메모마다 따로 미뤄 둔다 (타이핑 중 매번 보내지 않도록) */
+const noteTimers = new Map();
+function saveNote(id, patch, immediate = false) {
+  const n = state.notes.find((x) => x.id === id);
+  if (n) Object.assign(n, patch);
+
+  clearTimeout(noteTimers.get(id));
+  const send = async () => {
+    const { error } = await supabase.from("notes")
+      .update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id);
+    if (error) toast("메모 저장 실패: " + error.message);
+  };
+  if (immediate) send();
+  else noteTimers.set(id, setTimeout(send, 700));
+}
+
+function saveNotesShown() {
+  try { localStorage.setItem("mj.notesShown", state.notesShown ? "1" : "0"); } catch {}
+}
+
+$("#addNote").addEventListener("click", addNote);
+$("#toggleNotes").addEventListener("click", () => {
+  state.notesShown = !state.notesShown;
+  saveNotesShown();
+  renderNotes();
+});
+
+/* 버튼 동작 */
+$("#noteLayer").addEventListener("click", async (e) => {
+  const noteEl = e.target.closest(".note");
+  if (!noteEl) return;
+  const id = Number(noteEl.dataset.id);
+  const n = state.notes.find((x) => x.id === id);
+  if (!n) return;
+
+  const sw = e.target.closest("[data-color]");
+  if (sw) {
+    saveNote(id, { color: sw.dataset.color }, true);
+    renderNotes();
+    return;
+  }
+
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (!act) return;
+
+  if (act === "bold") { saveNote(id, { bold: !n.bold }, true); renderNotes(); }
+  if (act === "size") {
+    const next = NOTE_SIZES[(NOTE_SIZES.indexOf(n.font_size) + 1) % NOTE_SIZES.length] ?? NOTE_SIZES[0];
+    saveNote(id, { font_size: next }, true);
+    renderNotes();
+  }
+  if (act === "color") {
+    const box = $(".note-swatches", noteEl);
+    box.hidden = !box.hidden;
+  }
+  if (act === "pin") { saveNote(id, { pinned: !n.pinned }, true); renderNotes(); }
+  if (act === "del") {
+    if (!confirm("이 메모를 지울까요?")) return;
+    const { error } = await supabase.from("notes").delete().eq("id", id);
+    if (error) return toast("삭제 실패: " + error.message);
+    state.notes = state.notes.filter((x) => x.id !== id);
+    renderNotes();
+  }
+});
+
+/* 글자 입력 */
+$("#noteLayer").addEventListener("input", (e) => {
+  if (!e.target.classList.contains("note-body")) return;
+  const id = Number(e.target.closest(".note").dataset.id);
+  saveNote(id, { body: e.target.value });
+});
+
+/* 끌어서 옮기기 */
+let drag = null;
+$("#noteLayer").addEventListener("pointerdown", (e) => {
+  const bar = e.target.closest(".note-bar");
+  if (!bar || e.target.closest(".note-btn")) return;
+  const el = bar.closest(".note");
+  drag = { el, id: Number(el.dataset.id), dx: e.clientX - el.offsetLeft, dy: e.clientY - el.offsetTop };
+  el.classList.add("is-drag");
+  bar.setPointerCapture(e.pointerId);
+});
+$("#noteLayer").addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  drag.el.style.left = Math.max(0, e.clientX - drag.dx) + "px";
+  drag.el.style.top = Math.max(0, e.clientY - drag.dy) + "px";
+});
+$("#noteLayer").addEventListener("pointerup", () => {
+  if (!drag) return;
+  const { el, id } = drag;
+  el.classList.remove("is-drag");
+  saveNote(id, { x: Math.round(el.offsetLeft), y: Math.round(el.offsetTop) }, true);
+  drag = null;
+});
+
+/* 모서리를 끌어 크기를 바꾸면 저장한다 */
+const noteSizeTimer = new Map();
+const noteObserver = new ResizeObserver((entries) => {
+  for (const en of entries) {
+    const el = en.target;
+    // 다시 그리면서 떼어낸 요소는 0×0으로 보고된다. 그대로 저장하면 메모가 사라진다.
+    if (!el.isConnected || !el.offsetWidth || !el.offsetHeight) continue;
+    const id = Number(el.dataset.id);
+    const n = state.notes.find((x) => x.id === id);
+    if (!n || (n.w === el.offsetWidth && n.h === el.offsetHeight)) continue;
+    clearTimeout(noteSizeTimer.get(id));
+    noteSizeTimer.set(id, setTimeout(() => {
+      saveNote(id, { w: Math.round(el.offsetWidth), h: Math.round(el.offsetHeight) }, true);
+    }, 500));
+  }
+});
+
 /* ── 통화 ─────────────────────────────────── */
 $("#currency").addEventListener("change", (e) => {
   state.currency = e.target.value;
@@ -998,6 +1184,9 @@ window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     $$(".chart-box").forEach((b) => b._redraw && b._redraw());
+    // 창이 좁아지면 메모를 화면 안으로 끌어당긴다 (저장된 좌표는 그대로 둔다 —
+    // 폰에서 잠깐 봤다고 PC에서 잡아둔 자리가 바뀌면 안 되므로)
+    renderNotes();
   }, 150);
 });
 
@@ -1413,6 +1602,10 @@ $("#csvBtn").addEventListener("click", () => {
 
 /* ── 시작 ─────────────────────────────────── */
 $("#verMsg").textContent = "v" + APP_VERSION;
+try {
+  const saved = localStorage.getItem("mj.notesShown");
+  state.notesShown = saved === null ? window.innerWidth >= 1100 : saved === "1";
+} catch { state.notesShown = window.innerWidth >= 1100; }
 $("#currency").value = state.currency;
 $("#unitHint").textContent = state.currency === "KRW" ? "(원)" : "(USDT)";
 $("#acctUnit").textContent = state.currency === "KRW" ? "(원)" : "(USDT)";

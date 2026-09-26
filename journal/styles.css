@@ -541,6 +541,95 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 
 .disclaimer { font-size: 0.72rem; color: var(--muted); line-height: 1.6; padding: 0 4px; }
 
+/* ── 스티커 메모 ─────────────────────────── */
+:root {
+  --note-yellow: #fff3b0;  --note-yellow-ink: #4a3f00;
+  --note-pink:   #ffd6e0;  --note-pink-ink:   #4d1f2c;
+  --note-blue:   #cfe4ff;  --note-blue-ink:   #123054;
+  --note-green:  #cdefd6;  --note-green-ink:  #10391f;
+  --note-gray:   #e4e6e3;  --note-gray-ink:   #2b2e2b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --note-yellow: #4a4120;  --note-yellow-ink: #ffeaa0;
+    --note-pink:   #4d2a34;  --note-pink-ink:   #ffd1de;
+    --note-blue:   #1e3552;  --note-blue-ink:   #cde2ff;
+    --note-green:  #1e3d2a;  --note-green-ink:  #c8edd4;
+    --note-gray:   #33363a;  --note-gray-ink:   #dfe2e4;
+  }
+}
+:root[data-theme="dark"] {
+  --note-yellow: #4a4120;  --note-yellow-ink: #ffeaa0;
+  --note-pink:   #4d2a34;  --note-pink-ink:   #ffd1de;
+  --note-blue:   #1e3552;  --note-blue-ink:   #cde2ff;
+  --note-green:  #1e3d2a;  --note-green-ink:  #c8edd4;
+  --note-gray:   #33363a;  --note-gray-ink:   #dfe2e4;
+}
+
+.note-layer { position: absolute; inset: 0; pointer-events: none; z-index: 40; }
+
+.note {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px; min-height: 90px;
+  border-radius: 3px;
+  resize: both;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0,0,0,.14), 0 10px 22px rgba(0,0,0,.10);
+  background: var(--note-yellow);
+  color: var(--note-yellow-ink);
+}
+/* 고정하면 스크롤해도 화면에 붙어 있는다 */
+.note.is-pinned { position: fixed; box-shadow: 0 3px 6px rgba(0,0,0,.2), 0 14px 30px rgba(0,0,0,.16); }
+.note.is-drag { opacity: 0.92; cursor: grabbing; }
+
+.note-yellow { background: var(--note-yellow); color: var(--note-yellow-ink); }
+.note-pink   { background: var(--note-pink);   color: var(--note-pink-ink); }
+.note-blue   { background: var(--note-blue);   color: var(--note-blue-ink); }
+.note-green  { background: var(--note-green);  color: var(--note-green-ink); }
+.note-gray   { background: var(--note-gray);   color: var(--note-gray-ink); }
+
+.note-bar {
+  display: flex; align-items: center; gap: 1px;
+  padding: 3px 4px;
+  cursor: grab;
+  touch-action: none;
+  background: rgba(0,0,0,.05);
+}
+.note-grip { flex: 1; font-size: 0.7rem; opacity: .45; padding-left: 3px; user-select: none; }
+.note-btn {
+  width: 21px; height: 21px; flex: none;
+  border: none; border-radius: 4px; background: transparent;
+  color: inherit; font: inherit; font-size: 0.72rem; line-height: 1;
+  cursor: pointer; opacity: .6;
+  display: grid; place-items: center;
+}
+.note-btn:hover { opacity: 1; background: rgba(0,0,0,.09); }
+.note-btn.is-on { opacity: 1; background: rgba(0,0,0,.14); }
+.note-x { font-size: 1rem; }
+
+.note-swatches {
+  display: flex; gap: 4px; padding: 5px 6px;
+  background: rgba(0,0,0,.05);
+}
+.note-sw {
+  width: 17px; height: 17px; border-radius: 50%;
+  border: 1px solid rgba(0,0,0,.18); cursor: pointer; padding: 0;
+}
+
+.note-body {
+  flex: 1; width: 100%;
+  border: none; background: transparent; color: inherit;
+  padding: 7px 9px;
+  font-family: inherit; line-height: 1.5;
+  resize: none; outline: none;
+}
+.note-body::placeholder { color: currentColor; opacity: .38; }
+
+@media print { .note-layer { display: none; } }
+
 /* ── 모바일 ──────────────────────────────── */
 @media (max-width: 520px) {
   .wrap { padding: 14px 12px 40px; gap: 12px; }
@@ -560,6 +649,7 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   .pvr-row { grid-template-columns: auto 1fr 46px; gap: 8px; }
   .pvr-name { font-size: 0.74rem; }
   .row { grid-template-columns: 46px 1fr auto; gap: 8px; }
+  .note { min-width: 130px; }
   .tabs { padding: 3px; gap: 2px; }
   .tab { font-size: 0.78rem; padding: 8px 2px; }
   .review-headline { font-size: 1.15rem; }

@@ -35,6 +35,8 @@
   <header class="topbar">
     <h1 class="brand">📓 매매일지</h1>
     <div class="topbar-right">
+      <button id="addNote" class="btn btn-ghost btn-sm" type="button" title="스티커 메모 추가">+ 메모</button>
+      <button id="toggleNotes" class="btn btn-ghost btn-sm" type="button" aria-pressed="true">메모 숨기기</button>
       <select id="currency" class="mini-select" aria-label="통화">
         <option value="USDT">USDT</option>
         <option value="KRW">원화</option>
@@ -175,6 +177,9 @@
     <span id="verMsg" class="foot-msg" title="지금 돌고 있는 앱 버전"></span>
   </footer>
 </div>
+
+<!-- 스티커 메모 — 본문 위에 떠 있는 층. 화면이 넓으면 오른쪽 여백에 자리잡는다. -->
+<div id="noteLayer" class="note-layer" aria-label="스티커 메모"></div>
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
