@@ -90,10 +90,15 @@
     <!-- 매매 계획 — 진입가·TP·SL로 계획 손익비를 계산한다 -->
     <fieldset class="plan">
       <legend class="plan-legend">매매 계획</legend>
-      <div class="plan-grid">
+      <div class="plan-grid plan-grid-3">
         <label class="field">
-          <span>진입가</span>
-          <input id="fEntry" type="number" step="any" inputmode="decimal" placeholder="67200" required />
+          <span>전략</span>
+          <select id="fStrategy">
+            <option value="">단일 진입</option>
+            <option value="FVG">FVG (3구간)</option>
+            <option value="오더블럭">오더블럭</option>
+            <option value="기타">기타</option>
+          </select>
         </label>
         <label class="field">
           <span>TP <em>목표가</em></span>
@@ -103,6 +108,16 @@
           <span>SL <em>손절가</em></span>
           <input id="fSl" type="number" step="any" inputmode="decimal" placeholder="66300" required />
         </label>
+      </div>
+
+      <!-- 진입 구간 — FVG처럼 나눠 들어갈 때 여러 개가 된다. TP·SL은 공통. -->
+      <div class="legs">
+        <div class="legs-head">
+          <span class="legs-title">진입 구간</span>
+          <button type="button" id="addLeg" class="btn btn-ghost btn-sm">+ 구간 추가</button>
+        </div>
+        <div id="legRows"></div>
+        <div id="legAvg" class="legs-avg" hidden></div>
       </div>
       <div class="plan-grid plan-grid-3">
         <label class="field">

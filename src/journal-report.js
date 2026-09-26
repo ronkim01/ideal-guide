@@ -101,6 +101,7 @@ function summarize(trades) {
   }
 
   const bySymbol = {};
+  const byStrategy = {};
   const byTag = {};
   const byDow = Array.from({ length: 7 }, () => ({ pnl: 0, n: 0, w: 0, l: 0 }));
   const DOW = ["일", "월", "화", "수", "목", "금", "토"];
@@ -109,6 +110,12 @@ function summarize(trades) {
     bySymbol[t.symbol].pnl += num(t); bySymbol[t.symbol].n++;
     if (t.result === "win") bySymbol[t.symbol].w++;
     if (t.result === "lose") bySymbol[t.symbol].l++;
+
+    const strat = t.strategy || "단일 진입";
+    (byStrategy[strat] ??= { pnl: 0, n: 0, w: 0, l: 0 });
+    byStrategy[strat].pnl += num(t); byStrategy[strat].n++;
+    if (t.result === "win") byStrategy[strat].w++;
+    if (t.result === "lose") byStrategy[strat].l++;
 
     for (const g of t.tags || []) {
       (byTag[g] ??= { pnl: 0, n: 0, w: 0, l: 0 });
@@ -146,6 +153,7 @@ function summarize(trades) {
     long_count: trades.filter((t) => t.position === "long").length,
     short_count: trades.filter((t) => t.position === "short").length,
     by_symbol: Object.fromEntries(Object.entries(bySymbol).map(([k, v]) => [k, { ...v, pnl: r2(v.pnl) }])),
+    by_strategy: Object.fromEntries(Object.entries(byStrategy).map(([k, v]) => [k, { ...v, pnl: r2(v.pnl) }])),
     by_tag: Object.fromEntries(Object.entries(byTag).map(([k, v]) => [k, { ...v, pnl: r2(v.pnl) }])),
     by_dow: Object.fromEntries(byDow.map((v, i) => [DOW[i], { ...v, pnl: r2(v.pnl) }]).filter(([, v]) => v.n)),
   };
@@ -191,6 +199,8 @@ const SYSTEM = `당신은 트레이더의 매매 기록을 읽고 복기를 도�
 - 승률이 높아도 기대값이 음수면 그 점을 가장 먼저 지적합니다.
 - 각 매매에는 진입 전에 세운 계획 손익비(R)가 있습니다. **계획한 손익비(avg_planned_rr)와 실제로 나온 손익비(payoff)의 격차**를 반드시 살피세요. 계획이 2R인데 실제가 0.8이라면, 방향을 맞히고도 계획대로 실행하지 못했다는 뜻입니다. 어느 매매에서 그 격차가 벌어졌는지 날짜와 코인으로 짚어주세요.
 - 계획 손익비가 1R 미만인 매매(손절폭이 목표폭보다 큰 매매)가 있으면, 진입 자체가 불리했던 것이므로 따로 지적하세요.
+- 전략(FVG·오더블럭 등)이 적혀 있으면 by_strategy를 보고 **어느 전략이 실제로 돈을 벌고 있는지** 짚으세요. 건수가 적은 전략은 "아직 판단하기 이르다"고 분명히 말하고, 억지로 결론 내지 마세요.
+- 분할 진입(구간이 여럿인 매매)이 있으면, 나눠 들어간 것이 결과에 도움이 됐는지 한 번에 들어간 매매와 비교해 보세요.
 - 복기란(memo)에 적힌 본인의 말과 실제 손익이 어긋나는 지점을 찾아내면 가장 좋은 복기입니다.
 - 한국어로, 담백하게 씁니다.`;
 
@@ -199,7 +209,8 @@ const { token, userId } = await signIn();
 
 const trades = await api(
   `/rest/v1/trades?traded_at=gte.${from}&traded_at=lte.${to}` +
-  `&select=traded_at,symbol,position,pnl,result,entry_price,tp_price,sl_price,memo,tags,created_at` +
+  `&select=traded_at,symbol,position,pnl,result,entry_price,tp_price,sl_price,` +
+  `strategy,legs,memo,tags,created_at` +
   `&order=traded_at.asc`,
   { token }
 );
@@ -222,7 +233,11 @@ const tradeLines = trades.map((t) => {
   const r = planOf(t);
   return `${t.traded_at} | ${t.symbol} | ${t.position === "long" ? "롱" : "숏"} | ` +
     `${Number(t.pnl) >= 0 ? "+" : ""}${t.pnl} | ${{ win: "승", draw: "무", lose: "패" }[t.result]}` +
+    `${t.strategy ? ` | 전략: ${t.strategy}` : ""}` +
     `${r !== null ? ` | 계획 ${r.toFixed(2)}R (진입 ${t.entry_price} / TP ${t.tp_price} / SL ${t.sl_price})` : " | 계획 없음"}` +
+    `${(t.legs || []).length > 1
+        ? ` | ${t.legs.length}구간 분할: ${t.legs.map((l, i) => `${i + 1})${l.price}·${l.weight}%`).join(" ")}`
+        : ""}` +
     `${(t.tags || []).length ? ` | 태그: ${t.tags.join(",")}` : ""}` +
     `${t.memo ? ` | 복기: ${t.memo.replace(/\s+/g, " ").slice(0, 300)}` : ""}`;
 }).join("\n");
@@ -233,7 +248,7 @@ const user = `${yy}년 ${mm}월 매매 기록을 복기해주세요. 단위는 U
 ${JSON.stringify(stats, null, 2)}
 
 ## 매매 내역 (${trades.length}건)
-날짜 | 코인 | 포지션 | 손익 | 결과 | 계획 손익비(진입/TP/SL) | 태그 | 본인이 적은 복기
+날짜 | 코인 | 포지션 | 손익 | 결과 | 전략 | 계획 손익비(진입/TP/SL) | 분할 구간 | 태그 | 본인이 적은 복기
 ${tradeLines}
 
 위 기록에서 반복되는 행동 패턴을 찾아내고, 다음 달에 지킬 규칙을 제안해주세요.`;

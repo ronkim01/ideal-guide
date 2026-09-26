@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.26a";
+const APP_VERSION = "2026.09.26b";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -21,6 +21,8 @@ const state = {
   editingId: null,
   side: "long",
   tags: [],
+  legs: [{ price: "", weight: "" }],   // 진입 구간. FVG처럼 나눠 들어가면 여러 개가 된다.
+  strategy: "",
   currency: localStorage.getItem("mj.currency") || "USDT",
   account: localStorage.getItem("mj.account") || "",
   maxLossPct: localStorage.getItem("mj.maxLossPct") || "1",
@@ -88,6 +90,33 @@ function checkPlan(entry, tp, sl, side) {
   return { state: "ok", reward, risk, r: reward / risk };
 }
 
+/* 구간별 비중을 실제 비율로 바꾼다.
+   전부 비어 있으면 균등 분배. 하나라도 적혀 있으면 적힌 값끼리의 비율로 나눈다
+   (1 / 1 / 2 로 적으면 25% / 25% / 50%). */
+function legWeights(legs) {
+  const typed = legs.map((l) => numOf(l.weight));
+  const anyTyped = typed.some((w) => Number.isFinite(w) && w > 0);
+  const raw = anyTyped
+    ? typed.map((w) => (Number.isFinite(w) && w > 0 ? w : 0))
+    : legs.map(() => 1);
+  const sum = raw.reduce((a, b) => a + b, 0);
+  return sum > 0 ? raw.map((w) => w / sum) : legs.map(() => 1 / legs.length);
+}
+
+/* 구간들을 하나의 진입가로 합친다.
+   비중으로 가중평균한 값이 곧 "이 포지션의 진입가"다 —
+   총 위험 = 총수량 × |가중평균진입가 − SL| 이 정확히 성립하기 때문. */
+function resolveLegs(legs) {
+  const prices = legs.map((l) => numOf(l.price));
+  if (!prices.length || !prices.every(Number.isFinite)) return null;
+  const w = legWeights(legs);
+  return {
+    prices,
+    weights: w,
+    avg: prices.reduce((sum, p, i) => sum + p * w[i], 0),
+  };
+}
+
 /* 비중 계산 — 손절 퍼센트로 "한 번에 얼마를 걸지"를 역산한다.
      손절%    = 손절폭 ÷ 진입가 × 100
      진입 비중 = 계좌 × 최대손실률% ÷ 손절%      (100이 서로 상쇄된다)
@@ -101,12 +130,25 @@ function sizePosition(plan, entry, account, maxLossPct, leverage) {
   const lev = leverage > 0 ? leverage : 1;
   out.riskAmount = account * (maxLossPct / 100);   // 손절에 걸렸을 때 잃는 돈
   out.notional = (account * maxLossPct) / slPct;   // 포지션 전체 크기
-  out.qty = out.notional / entry;                  // 주문 수량
+  out.qty = out.notional / entry;                  // 주문 수량 (전체)
   out.rewardAmount = plan.reward * out.qty;        // TP에 닿았을 때 버는 돈
   out.lev = lev;
   out.margin = out.notional / lev;                 // 거래소에 실제로 넣는 돈
   out.needLev = out.notional / account;            // 계좌로 감당하려면 필요한 최소 배수
   return out;
+}
+
+/* 총 수량을 구간별로 나눈다 */
+function splitQty(totalQty, weights) {
+  return weights.map((w) => totalQty * w);
+}
+
+/* 저장된 기록의 진입 구간. 예전 기록엔 legs가 없으니 진입가 한 개로 본다. */
+function legsOf(t) {
+  if (Array.isArray(t.legs) && t.legs.length) {
+    return t.legs.map((l) => ({ price: String(l.price ?? ""), weight: String(l.weight ?? "") }));
+  }
+  return [{ price: String(t.entry_price ?? ""), weight: "" }];
 }
 
 /* 저장된 기록 한 건의 계획 손익비 (셋 중 하나라도 없으면 null) */
@@ -238,10 +280,84 @@ $("#tagPicks").addEventListener("click", (e) => {
   renderTagPicks();
 });
 
-function readPlanInputs() {
-  return checkPlan(
-    numOf($("#fEntry").value), numOf($("#fTp").value), numOf($("#fSl").value), state.side);
+const MAX_LEGS = 5;
+
+/* 화면의 구간 입력칸을 state로 읽어온다 */
+function readLegs() {
+  const rows = $$("#legRows .leg-row");
+  if (!rows.length) return state.legs;
+  state.legs = rows.map((r) => ({
+    price: $(".leg-price", r).value,
+    weight: $(".leg-weight", r).value,
+  }));
+  return state.legs;
 }
+
+/* 구간 줄을 다시 그린다. 값이 바뀔 때가 아니라 구간을 더하고 뺄 때만 부른다
+   (입력 중 다시 그리면 커서가 튄다) */
+function renderLegs() {
+  const multi = state.legs.length > 1;
+  $("#legRows").innerHTML = state.legs.map((leg, i) => `
+    <div class="leg-row" data-i="${i}">
+      <span class="leg-no">${i + 1}</span>
+      <input class="leg-price" type="number" step="any" inputmode="decimal"
+             placeholder="진입가" value="${esc(leg.price)}" aria-label="${i + 1}구간 진입가" />
+      ${multi ? `<div class="leg-w">
+        <input class="leg-weight" type="number" step="any" inputmode="decimal" min="0"
+               placeholder="균등" value="${esc(leg.weight)}" aria-label="${i + 1}구간 비중" />
+        <span class="leg-pct" data-pct="${i}">—</span>
+      </div>` : `<input class="leg-weight" type="hidden" value="" />`}
+      ${multi ? `<button type="button" class="leg-del" data-del-leg="${i}" aria-label="${i + 1}구간 삭제">×</button>` : ""}
+    </div>`).join("");
+  $("#addLeg").hidden = state.legs.length >= MAX_LEGS;
+  $(".legs").classList.toggle("is-multi", multi);
+  if (multi) renderLegAvg(resolveLegs(state.legs));
+}
+
+function readPlanInputs() {
+  const r = resolveLegs(readLegs());
+  if (!r) return { state: "empty" };
+  const v = checkPlan(r.avg, numOf($("#fTp").value), numOf($("#fSl").value), state.side);
+  if (v.state !== "ok") return v;
+
+  // 각 구간도 손절가 반대편에 있어야 한다 (롱이면 전부 SL보다 위)
+  const sl = numOf($("#fSl").value);
+  const wrong = r.prices.findIndex((p) => (state.side === "long" ? p <= sl : p >= sl));
+  if (wrong >= 0) {
+    return { state: "bad", msg: `${wrong + 1}구간 진입가가 손절가 ${state.side === "long" ? "아래" : "위"}에 있습니다` };
+  }
+  return { ...v, legs: r };
+}
+
+$("#addLeg").addEventListener("click", () => {
+  readLegs();
+  if (state.legs.length >= MAX_LEGS) return;
+  state.legs.push({ price: "", weight: "" });
+  renderLegs();
+  renderRR();
+  $$("#legRows .leg-price").at(-1)?.focus();
+});
+
+$("#legRows").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-del-leg]");
+  if (!btn) return;
+  readLegs();
+  state.legs.splice(Number(btn.dataset.delLeg), 1);
+  if (!state.legs.length) state.legs = [{ price: "", weight: "" }];
+  renderLegs();
+  renderRR();
+});
+
+/* FVG는 세 구간으로 나눠 들어가는 전략이라 고르면 구간을 3개로 맞춘다 */
+$("#fStrategy").addEventListener("change", () => {
+  state.strategy = $("#fStrategy").value;
+  if (state.strategy === "FVG") {
+    readLegs();
+    while (state.legs.length < 3) state.legs.push({ price: "", weight: "" });
+    renderLegs();
+  }
+  renderRR();
+});
 
 /* 입력하는 즉시 계획 손익비를 보여준다 — 기록 전에 스스로 판단할 수 있게 */
 function renderRR() {
@@ -252,6 +368,7 @@ function renderRR() {
   if (v.state === "empty") {
     el.className = "rr";
     el.innerHTML = `<span class="rr-hint">진입가 · TP · SL을 넣으면 계획 손익비가 계산됩니다</span>`;
+    renderLegAvg(resolveLegs(readLegs()));
     return;
   }
   if (v.state === "bad") {
@@ -259,10 +376,11 @@ function renderRR() {
     el.innerHTML = `<span class="rr-msg">⚠ ${esc(v.msg)}</span>`;
     return;
   }
-  const entry = numOf($("#fEntry").value);
+  const entry = v.legs.avg;
   const sz = sizePosition(v, entry, numOf($("#fAccount").value),
                           numOf($("#fMaxLoss").value), numOf($("#fLeverage").value));
   const sym = ($("#fSymbol").value || "").trim().toUpperCase();
+  renderLegAvg(v.legs);
 
   el.className = "rr " + (v.r >= 2 ? "is-good" : v.r >= 1 ? "" : "is-thin");
   el.innerHTML = `
@@ -298,6 +416,10 @@ function renderRR() {
     (sz.margin !== undefined && sz.margin > (numOf($("#fAccount").value) || 0)
       ? `<div class="rr-note">증거금이 계좌보다 큽니다 — 레버리지를 ${Math.ceil(sz.needLev)}배 이상으로 올리거나 손절폭을 넓히세요</div>`
       : "") +
+    (sz.qty !== undefined && v.legs.prices.length > 1
+      ? `<div class="rr-legs">구간별 수량 ${splitQty(sz.qty, v.legs.weights)
+          .map((q, i) => `<b>${i + 1}</b> ${fmtQty(q)}`).join(" · ")}</div>`
+      : "") +
     (sz.riskAmount !== undefined
       ? `<div class="rr-foot">
            <span>익절하면 <b class="up">${money(sz.rewardAmount, { sign: true })}</b></span>
@@ -307,7 +429,7 @@ function renderRR() {
       : "");
 }
 
-const PLAN_INPUTS = ["fEntry", "fTp", "fSl", "fAccount", "fMaxLoss", "fLeverage", "fSymbol"];
+const PLAN_INPUTS = ["fTp", "fSl", "fAccount", "fMaxLoss", "fLeverage", "fSymbol"];
 
 /* 계좌·최대 손실률은 이 브라우저에 기억해둔다 (다음 매매에 자동으로 채워짐) */
 function rememberSizing() {
@@ -329,6 +451,25 @@ function rememberSizing() {
    "66300"을 치는 동안 "6", "66"으로 계산돼 0.03R 같은 값과 빨간 경고가
    번쩍이면 오히려 혼란스럽다. 손을 멈추면 바로 나온다. */
 let rrTimer;
+/* 구간이 둘 이상일 때만 평균 진입가를 보여준다 */
+function renderLegAvg(resolved) {
+  // "1 / 1 / 2" 처럼 적어도 실제로는 25/25/50% 라는 걸 각 줄에 그대로 보여준다
+  const pcts = $$("#legRows .leg-pct");
+  pcts.forEach((el, i) => {
+    const w = resolved?.weights?.[i];
+    el.textContent = w === undefined ? "—" : (w * 100).toFixed(1) + "%";
+  });
+
+  const el = $("#legAvg");
+  if (!el) return;
+  if (!resolved || resolved.prices.length < 2) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML =
+    `<span class="legs-avg-key">평균 진입가</span>
+     <span class="legs-avg-val">${fmtPrice(resolved.avg)}</span>
+     <span class="legs-avg-sub">비중대로 가중평균한 값입니다</span>`;
+}
+
 function renderRRSoon() {
   clearTimeout(rrTimer);
   rrTimer = setTimeout(renderRR, 260);
@@ -344,7 +485,12 @@ PLAN_INPUTS.forEach((id) => {
 
 // 폼 전체에도 한 번 더 걸어둔다 (위 배선이 실패해도 입력하는 즉시 계산되도록)
 form.addEventListener("input", (e) => {
-  if (PLAN_INPUTS.includes(e.target && e.target.id)) renderRRSoon();
+  const t = e.target;
+  if (!t) return;
+  // 구간 칸은 구간을 더할 때마다 새로 만들어지므로 폼 전체에서 받는다
+  if (PLAN_INPUTS.includes(t.id) || t.classList.contains("leg-price") || t.classList.contains("leg-weight")) {
+    renderRRSoon();
+  }
 });
 
 $$(".seg-btn").forEach((btn) => {
@@ -371,6 +517,10 @@ function resetForm() {
     b.classList.toggle("is-on", on);
     b.setAttribute("aria-checked", String(on));
   });
+  state.legs = [{ price: "", weight: "" }];
+  state.strategy = "";
+  $("#fStrategy").value = "";
+  renderLegs();
   $("#fAccount").value = state.account;   // form.reset()이 비우므로 기억한 값을 되살린다
   $("#fMaxLoss").value = state.maxLossPct;
   $("#fLeverage").value = state.leverage;
@@ -384,10 +534,13 @@ function resetForm() {
 /* 코인·포지션·계획 가격은 수정과 복사가 똑같이 채운다 */
 function fillPlanFields(t) {
   state.side = t.position;
+  state.legs = legsOf(t);
+  state.strategy = t.strategy || "";
   $("#fSymbol").value = t.symbol;
-  $("#fEntry").value = t.entry_price ?? "";
+  $("#fStrategy").value = state.strategy;
   $("#fTp").value = t.tp_price ?? "";
   $("#fSl").value = t.sl_price ?? "";
+  renderLegs();
   $$(".seg-btn").forEach((b) => {
     const on = b.dataset.pos === t.position;
     b.classList.toggle("is-on", on);
@@ -450,7 +603,7 @@ form.addEventListener("submit", async (e) => {
   // 계획(진입가·TP·SL)은 필수. 방향이 어긋나면 오타일 가능성이 커서 막는다.
   const plan = readPlanInputs();
   if (plan.state === "empty") {
-    $("#fEntry").focus();
+    $("#legRows .leg-price")?.focus();
     return toast("진입가 · TP · SL을 모두 입력하세요");
   }
   if (plan.state === "bad") return toast(plan.msg);
@@ -462,9 +615,16 @@ form.addEventListener("submit", async (e) => {
     position: state.side,
     pnl,
     result: pick === "auto" ? deriveResult(pnl) : pick,
-    entry_price: Number($("#fEntry").value),
+    // 구간이 여럿이면 가중평균 진입가가 entry_price에 들어간다.
+    // 기존 통계·차트·복기 리포트가 손대지 않아도 그대로 동작하게 하기 위함.
+    entry_price: plan.legs.avg,
     tp_price: Number($("#fTp").value),
     sl_price: Number($("#fSl").value),
+    strategy: $("#fStrategy").value || null,
+    legs: plan.legs.prices.map((price, i) => ({
+      price,
+      weight: Math.round(plan.legs.weights[i] * 1000) / 10,   // % 소수 한 자리
+    })),
     memo: $("#fMemo").value.trim() || null,
     tags: state.tags,
   };
@@ -608,7 +768,11 @@ function tradeRows(trades, emptyText) {
           <span class="row-sym">${esc(t.symbol)}</span>
           <span class="row-pos">${t.position === "long" ? "롱" : "숏"}</span>
           <span class="row-res" style="color:${color}"><i style="background:${color}"></i>${RESULT_KO[res]}</span>
-          ${plan ? `<span class="row-rr" title="진입 ${fmtPrice(t.entry_price)} · TP ${fmtPrice(t.tp_price)} · SL ${fmtPrice(t.sl_price)}">계획 ${plan.r.toFixed(1)}R</span>` : ""}
+          ${t.strategy ? `<span class="row-strat">${esc(t.strategy)}</span>` : ""}
+          ${plan ? `<span class="row-rr" title="${(t.legs || []).length > 1
+              ? (t.legs || []).map((l, i) => `${i + 1}구간 ${fmtPrice(l.price)}`).join(" · ") + ` (평균 ${fmtPrice(t.entry_price)})`
+              : `진입 ${fmtPrice(t.entry_price)}`} · TP ${fmtPrice(t.tp_price)} · SL ${fmtPrice(t.sl_price)}">계획 ${plan.r.toFixed(1)}R${
+              (t.legs || []).length > 1 ? ` <em>${t.legs.length}구간</em>` : ""}</span>` : ""}
         </div>
         ${t.memo ? `<div class="row-memo">${esc(t.memo)}</div>` : ""}
         ${(t.tags || []).length ? `<div class="row-tags">${t.tags.map((g) => `<span class="row-tag">${esc(g)}</span>`).join("")}</div>` : ""}
@@ -1004,6 +1168,27 @@ function renderStats(panel) {
     if (t.result === "lose") byDow[d].l++;
   }
 
+  const byStrategy = {};
+  for (const t of state.trades) {
+    const k = t.strategy || "단일 진입";
+    (byStrategy[k] ??= { pnl: 0, n: 0, w: 0, l: 0, rSum: 0, rN: 0 });
+    byStrategy[k].pnl += Number(t.pnl);
+    byStrategy[k].n++;
+    if (t.result === "win") byStrategy[k].w++;
+    if (t.result === "lose") byStrategy[k].l++;
+    const pl = planOf(t);
+    if (pl) { byStrategy[k].rSum += pl.r; byStrategy[k].rN++; }
+  }
+  const stratRows = Object.entries(byStrategy)
+    .sort((a, b) => b[1].pnl - a[1].pnl)
+    .map(([name, v]) => `<tr>
+      <td><strong>${esc(name)}</strong></td>
+      <td>${v.n}</td>
+      <td>${v.w + v.l ? ((v.w / (v.w + v.l)) * 100).toFixed(0) + "%" : "—"}</td>
+      <td>${v.rN ? (v.rSum / v.rN).toFixed(2) + "R" : "—"}</td>
+      <td class="${toneOf(v.pnl)}">${money(v.pnl, { sign: true })}</td>
+    </tr>`).join("");
+
   const symRows = Object.entries(bySymbol)
     .sort((a, b) => b[1].pnl - a[1].pnl)
     .map(([sym, v]) => `<tr>
@@ -1036,6 +1221,13 @@ function renderStats(panel) {
         s.worst === null ? "손실 거래 없음" : `최악 ${money(s.worst, { sign: true })}`)}
     </div>` +
     planVsRealCard(s) +
+    `<div class="card">
+      <div class="list-head"><h2 class="list-title">전략별 성적</h2></div>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>전략</th><th>건수</th><th>승률</th><th>계획 R</th><th>누적 손익</th></tr></thead>
+        <tbody>${stratRows || `<tr><td colspan="5" class="empty">기록 없음</td></tr>`}</tbody>
+      </table></div>
+    </div>` +
     `<div class="card">
       <div class="list-head"><h2 class="list-title">코인별 성적</h2></div>
       <div class="tbl-wrap"><table class="tbl">
@@ -1162,17 +1354,20 @@ $("#panels").addEventListener("click", (e) => {
 /* ── CSV 내보내기 ─────────────────────────── */
 $("#csvBtn").addEventListener("click", () => {
   if (!state.trades.length) return toast("내보낼 기록이 없습니다");
-  const head = ["날짜", "코인", "포지션", "결과", "손익",
-                "진입가", "TP", "SL", "계획 손익비", "태그", "매매 복기"];
+  const head = ["날짜", "코인", "전략", "포지션", "결과", "손익",
+                "진입가(평균)", "진입 구간", "TP", "SL", "계획 손익비", "태그", "매매 복기"];
   const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const body = [...state.trades]
     .sort((a, b) => a.traded_at.localeCompare(b.traded_at))
     .map((t) => {
       const plan = planOf(t);
+      const legs = (t.legs || []).length > 1
+        ? t.legs.map((l, i) => `${i + 1}) ${l.price} (${l.weight}%)`).join(" ")
+        : "";
       return [
-        t.traded_at, t.symbol, t.position === "long" ? "롱" : "숏",
+        t.traded_at, t.symbol, t.strategy || "단일 진입", t.position === "long" ? "롱" : "숏",
         RESULT_KO[t.result], t.pnl,
-        t.entry_price ?? "", t.tp_price ?? "", t.sl_price ?? "",
+        t.entry_price ?? "", legs, t.tp_price ?? "", t.sl_price ?? "",
         plan ? plan.r.toFixed(2) : "",
         (t.tags || []).join(" "), t.memo || "",
       ].map(cell).join(",");

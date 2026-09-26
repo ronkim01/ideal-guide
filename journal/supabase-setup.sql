@@ -15,9 +15,11 @@ create table if not exists public.trades (
   position   text not null check (position in ('long','short')),
   pnl        numeric(16,4) not null default 0,            -- 실현 손익 (손실은 음수)
   result     text not null check (result in ('win','draw','lose')),
-  entry_price numeric(20,8),                              -- 진입가
+  entry_price numeric(20,8),                              -- 진입가 (구간이 여럿이면 가중평균)
   tp_price    numeric(20,8),                              -- 목표가 (Take Profit)
   sl_price    numeric(20,8),                              -- 손절가 (Stop Loss)
+  strategy    text,                                       -- FVG / 오더블럭 / 기타
+  legs        jsonb,                                      -- 분할 진입 구간 [{price, weight}]
   memo       text,                                        -- 매매 복기 (분할 매수·매도 내역 포함)
   tags       text[] not null default '{}',
   created_at timestamptz not null default now()
@@ -29,6 +31,8 @@ create table if not exists public.trades (
 alter table public.trades add column if not exists entry_price numeric(20,8);
 alter table public.trades add column if not exists tp_price    numeric(20,8);
 alter table public.trades add column if not exists sl_price    numeric(20,8);
+alter table public.trades add column if not exists strategy    text;
+alter table public.trades add column if not exists legs        jsonb;
 
 -- 2) 조회 성능용 인덱스 (날짜 내림차순 조회가 기본)
 create index if not exists trades_user_date_idx

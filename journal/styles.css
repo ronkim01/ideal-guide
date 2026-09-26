@@ -147,6 +147,68 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   color: var(--muted);
 }
 
+/* ── 진입 구간 (FVG 같은 분할 진입) ──────── */
+.legs { margin-top: 10px; }
+.legs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.legs-title { font-size: 0.75rem; font-weight: 600; color: var(--ink-2); }
+
+.leg-row {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.legs.is-multi .leg-row { grid-template-columns: 20px 1fr 118px auto; }
+.leg-no {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--grid); color: var(--ink-2);
+  font-size: 0.7rem; font-weight: 700;
+  display: grid; place-items: center;
+}
+.leg-w { position: relative; display: flex; align-items: center; }
+.leg-w .leg-weight { padding-right: 46px; }
+.leg-pct {
+  position: absolute; right: 8px;
+  font-size: 0.7rem; font-weight: 600; color: var(--ink-2);
+  pointer-events: none; font-variant-numeric: tabular-nums;
+}
+.leg-del {
+  width: 26px; height: 26px; flex: none;
+  border: none; border-radius: 7px; background: transparent;
+  color: var(--muted); font-size: 1rem; line-height: 1; cursor: pointer;
+}
+.leg-del:hover { background: var(--hover); color: var(--profit); }
+
+.legs-avg {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px;
+  margin-top: 2px; padding: 6px 10px;
+  background: var(--surface-2, var(--field));
+  border: 1px solid var(--border); border-radius: 7px;
+}
+.legs-avg-key { font-size: 0.72rem; color: var(--ink-2); font-weight: 600; }
+.legs-avg-val { font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.legs-avg-sub { font-size: 0.68rem; color: var(--muted); }
+
+/* 구간별 수량 */
+.rr-legs {
+  margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-size: 0.74rem; color: var(--ink-2);
+}
+.rr-legs b {
+  display: inline-block; min-width: 14px; margin-right: 2px;
+  color: var(--muted); font-weight: 700;
+}
+
+/* 목록 행의 전략 배지 */
+.row-strat {
+  font-size: 0.66rem; font-weight: 700;
+  color: var(--ink-2); border: 1px solid var(--line-strong, var(--border));
+  border-radius: 5px; padding: 0 5px; white-space: nowrap;
+}
+.row-rr em { font-style: normal; color: var(--muted); font-weight: 600; }
+
 /* 계산 결과 — 입력하는 즉시 반응 */
 .rr {
   margin-top: 10px;
@@ -490,6 +552,8 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   .plan-grid input { padding: 8px 8px; font-size: 0.88rem; }
   .rr { padding: 9px 10px; }
   .plan-grid-3 { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .legs.is-multi .leg-row { grid-template-columns: 20px 1fr 104px auto; gap: 5px; }
+  .leg-row input { padding: 8px; font-size: 0.88rem; }
   .rr-grid { grid-template-columns: 1fr 1fr; gap: 9px 10px; }
   .rr-num { font-size: 1.08rem; }
   .rr-cell.is-lead { padding-left: 9px; }
