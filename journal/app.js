@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.24a";
+const APP_VERSION = "2026.09.26a";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -381,25 +381,31 @@ function resetForm() {
   renderRR();
 }
 
-function startEdit(id) {
-  const t = state.trades.find((x) => x.id === id);
-  if (!t) return;
-  state.editingId = id;
+/* 코인·포지션·계획 가격은 수정과 복사가 똑같이 채운다 */
+function fillPlanFields(t) {
   state.side = t.position;
-  state.tags = [...(t.tags || [])];
-  $("#fDate").value = t.traded_at;
   $("#fSymbol").value = t.symbol;
-  $("#fPnl").value = t.pnl;
   $("#fEntry").value = t.entry_price ?? "";
   $("#fTp").value = t.tp_price ?? "";
   $("#fSl").value = t.sl_price ?? "";
-  $("#fMemo").value = t.memo || "";
-  $("#fResult").value = t.result === deriveResult(Number(t.pnl)) ? "auto" : t.result;
   $$(".seg-btn").forEach((b) => {
     const on = b.dataset.pos === t.position;
     b.classList.toggle("is-on", on);
     b.setAttribute("aria-checked", String(on));
   });
+}
+
+function startEdit(id) {
+  const t = state.trades.find((x) => x.id === id);
+  if (!t) return;
+  state.editingId = id;
+  state.tags = [...(t.tags || [])];
+  fillPlanFields(t);
+  $("#fDate").value = t.traded_at;
+  $("#fPnl").value = t.pnl;
+  $("#fMemo").value = t.memo || "";
+  $("#fResult").value = t.result === deriveResult(Number(t.pnl)) ? "auto" : t.result;
+
   form.hidden = false;
   $("#entryTitle").textContent = "✏️ 기록 수정";
   $("#saveBtn").textContent = "수정 저장";
@@ -407,6 +413,31 @@ function startEdit(id) {
   renderTagPicks();
   renderRR();
   form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* 이전 기록을 새 기록으로 복사 — 같은 자리 재진입·분할 진입에 쓴다.
+   코인과 계획 가격만 가져오고, 그 매매에만 해당하는 것(손익·복기·태그)은 비운다. */
+function startCopy(id) {
+  const t = state.trades.find((x) => x.id === id);
+  if (!t) return;
+  state.editingId = null;           // 새 기록이다. 원본은 그대로 남는다.
+  state.tags = [];
+  fillPlanFields(t);
+  $("#fDate").value = localDate();  // 오늘 날짜로
+  $("#fPnl").value = "";
+  $("#fMemo").value = "";
+  $("#fResult").value = "auto";
+
+  form.hidden = false;
+  $("#entryTitle").textContent = "📋 이전 기록 복사";
+  $("#saveBtn").textContent = "기록하기";
+  $("#cancelEdit").hidden = false;
+  $("#formMsg").textContent = "";
+  renderTagPicks();
+  renderRR();
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+  setTimeout(() => $("#fPnl").focus(), 350);
+  toast(`${t.symbol} 계획을 복사했습니다 — 손익을 채우세요`);
 }
 
 $("#cancelEdit").addEventListener("click", resetForm);
@@ -586,6 +617,8 @@ function tradeRows(trades, emptyText) {
         <div class="row-pnl ${toneOf(pnl)}">${money(pnl, { sign: true })}</div>
         <div class="row-acts">
           <button class="icon-btn" data-edit="${t.id}" type="button">수정</button>
+          <button class="icon-btn" data-copy="${t.id}" type="button"
+                  title="이 매매의 코인·진입가·TP·SL을 새 기록으로 가져옵니다">복사</button>
           <button class="icon-btn" data-del="${t.id}" type="button">삭제</button>
         </div>
       </div>
@@ -1119,8 +1152,10 @@ function render() {
 
 $("#panels").addEventListener("click", (e) => {
   const ed = e.target.closest("[data-edit]");
+  const cp = e.target.closest("[data-copy]");
   const dl = e.target.closest("[data-del]");
   if (ed) startEdit(Number(ed.dataset.edit));
+  if (cp) startCopy(Number(cp.dataset.copy));
   if (dl) deleteTrade(Number(dl.dataset.del));
 });
 
