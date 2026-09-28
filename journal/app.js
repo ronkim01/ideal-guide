@@ -8,10 +8,14 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.26f";
+const APP_VERSION = "2026.09.28a";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
+
+/* 전략 — 한 매매에 여러 개 붙일 수 있다 (예: FVG + 유동성) */
+const STRATEGIES = ["FVG", "오더블럭", "추세", "채널", "유동성",
+                    "컵앤핸들", "다이아몬드헤드", "아담앤이브", "기타"];
 
 const state = {
   trades: [],
@@ -22,7 +26,7 @@ const state = {
   side: "long",
   tags: [],
   legs: [{ price: "", weight: "" }],   // 진입 구간. FVG처럼 나눠 들어가면 여러 개가 된다.
-  strategy: "",
+  strategies: [],
   notes: [],
   notesShown: true,
   currency: localStorage.getItem("mj.currency") || "USDT",
@@ -157,6 +161,12 @@ function splitQty(totalQty, weights) {
   return weights.map((w) => totalQty * w);
 }
 
+/* 저장된 기록의 전략 목록. 예전 기록엔 strategy 한 개만 있으니 그것을 감싼다. */
+function strategiesOf(t) {
+  if (Array.isArray(t.strategies) && t.strategies.length) return t.strategies;
+  return t.strategy ? [t.strategy] : [];
+}
+
 /* 저장된 기록의 진입 구간. 예전 기록엔 legs가 없으니 진입가 한 개로 본다. */
 function legsOf(t) {
   if (Array.isArray(t.legs) && t.legs.length) {
@@ -286,6 +296,35 @@ function renderTagPicks() {
   ).join("");
 }
 
+function renderStratPicks() {
+  $("#stratPicks").innerHTML = STRATEGIES.map((t) =>
+    `<button type="button" class="chip${state.strategies.includes(t) ? " is-on" : ""}"
+      data-strat="${esc(t)}">${esc(t)}${MULTI_LEG_STRATEGIES.includes(t) ? " <em>3구간</em>" : ""}</button>`
+  ).join("");
+}
+
+/* 전략을 고르면 구간 수를 맞춘다.
+   FVG·오더블럭이 하나라도 들어 있으면 3칸, 아니면 1칸으로 접는다.
+   접을 때는 비어 있는 구간만 접어 적어둔 가격을 지키지 않게 한다. */
+$("#stratPicks").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-strat]");
+  if (!btn) return;
+  const name = btn.dataset.strat;
+  state.strategies = state.strategies.includes(name)
+    ? state.strategies.filter((x) => x !== name)
+    : [...state.strategies, name];
+  renderStratPicks();
+
+  readLegs();
+  if (state.strategies.some((x) => MULTI_LEG_STRATEGIES.includes(x))) {
+    while (state.legs.length < DEFAULT_LEGS) state.legs.push({ price: "", weight: "" });
+  } else {
+    while (state.legs.length > 1 && !state.legs.at(-1).price.trim()) state.legs.pop();
+  }
+  renderLegs();
+  renderRR();
+});
+
 $("#tagPicks").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-tag]");
   if (!btn) return;
@@ -296,9 +335,9 @@ $("#tagPicks").addEventListener("click", (e) => {
 
 const MAX_LEGS = 5;
 const DEFAULT_LEGS = 3;
-/* 한 자리를 나눠 들어가는 전략들 — 고르면 구간이 3개로 펼쳐진다.
-   여기 없는 전략(추세·채널·유동성·컵앤핸들·다이아몬드헤드·아담앤이브 등)은
-   구간 1개로 시작한다. 필요하면 "+ 구간 추가"로 언제든 늘릴 수 있다. */
+/* 한 자리를 나눠 들어가는 전략들 — 하나라도 고르면 구간이 3개로 펼쳐진다.
+   나머지 전략만 고르면 구간 1개로 시작한다.
+   어느 쪽이든 "+ 구간 추가"로 언제든 늘릴 수 있다. */
 const MULTI_LEG_STRATEGIES = ["FVG", "오더블럭"];
 
 /* 화면의 구간 입력칸을 state로 읽어온다 */
@@ -365,23 +404,6 @@ $("#legRows").addEventListener("click", (e) => {
   readLegs();
   state.legs.splice(Number(btn.dataset.delLeg), 1);
   if (!state.legs.length) state.legs = [{ price: "", weight: "" }];
-  renderLegs();
-  renderRR();
-});
-
-/* FVG·오더블럭은 한 자리를 나눠 들어가는 전략이라 고르면 구간을 3개로 맞춘다.
-   나머지 전략은 구간 1개로 접는다 — 단, 비어 있는 구간만 접는다.
-   가격을 적어둔 구간은 남긴다 (전략을 잘못 눌러도 입력이 날아가지 않게) */
-$("#fStrategy").addEventListener("change", () => {
-  state.strategy = $("#fStrategy").value;
-  readLegs();
-
-  if (MULTI_LEG_STRATEGIES.includes(state.strategy)) {
-    while (state.legs.length < DEFAULT_LEGS) state.legs.push({ price: "", weight: "" });
-  } else {
-    while (state.legs.length > 1 && !state.legs.at(-1).price.trim()) state.legs.pop();
-  }
-
   renderLegs();
   renderRR();
 });
@@ -551,8 +573,8 @@ function resetForm() {
     b.setAttribute("aria-checked", String(on));
   });
   state.legs = [{ price: "", weight: "" }];
-  state.strategy = "";
-  $("#fStrategy").value = "";
+  state.strategies = [];
+  renderStratPicks();
   renderLegs();
   $("#fAccount").value = state.account;   // form.reset()이 비우므로 기억한 값을 되살린다
   $("#fMaxLoss").value = state.maxLossPct;
@@ -568,9 +590,9 @@ function resetForm() {
 function fillPlanFields(t) {
   state.side = t.position;
   state.legs = legsOf(t);
-  state.strategy = t.strategy || "";
+  state.strategies = strategiesOf(t);
   $("#fSymbol").value = t.symbol;
-  $("#fStrategy").value = state.strategy;
+  renderStratPicks();
   $("#fTp").value = t.tp_price ?? "";
   $("#fSl").value = t.sl_price ?? "";
   renderLegs();
@@ -653,7 +675,9 @@ form.addEventListener("submit", async (e) => {
     entry_price: plan.legs.avg,
     tp_price: Number($("#fTp").value),
     sl_price: Number($("#fSl").value),
-    strategy: $("#fStrategy").value || null,
+    // strategies가 본체. strategy에는 첫 번째 것을 넣어 예전 칸도 비지 않게 둔다.
+    strategies: state.strategies,
+    strategy: state.strategies[0] || null,
     legs: plan.legs.prices.map((price, i) => ({
       price,
       weight: Math.round(plan.legs.weights[i] * 1000) / 10,   // % 소수 한 자리
@@ -985,7 +1009,7 @@ function tradeRows(trades, emptyText) {
           <span class="row-sym">${esc(t.symbol)}</span>
           <span class="row-pos">${t.position === "long" ? "롱" : "숏"}</span>
           <span class="row-res" style="color:${color}"><i style="background:${color}"></i>${RESULT_KO[res]}</span>
-          ${t.strategy ? `<span class="row-strat">${esc(t.strategy)}</span>` : ""}
+          ${strategiesOf(t).map((x) => `<span class="row-strat">${esc(x)}</span>`).join("")}
           ${plan ? `<span class="row-rr" title="${(t.legs || []).length > 1
               ? (t.legs || []).map((l, i) => `${i + 1}구간 ${fmtPrice(l.price)}`).join(" · ") + ` (평균 ${fmtPrice(t.entry_price)})`
               : `진입 ${fmtPrice(t.entry_price)}`} · TP ${fmtPrice(t.tp_price)} · SL ${fmtPrice(t.sl_price)}">계획 ${plan.r.toFixed(1)}R${
@@ -1388,16 +1412,19 @@ function renderStats(panel) {
     if (t.result === "lose") byDow[d].l++;
   }
 
+  // 전략을 여러 개 고른 매매는 각 전략에 모두 잡힌다 (합계가 전체와 다를 수 있다)
   const byStrategy = {};
   for (const t of state.trades) {
-    const k = t.strategy || "단일 진입";
-    (byStrategy[k] ??= { pnl: 0, n: 0, w: 0, l: 0, rSum: 0, rN: 0 });
-    byStrategy[k].pnl += Number(t.pnl);
-    byStrategy[k].n++;
-    if (t.result === "win") byStrategy[k].w++;
-    if (t.result === "lose") byStrategy[k].l++;
-    const pl = planOf(t);
-    if (pl) { byStrategy[k].rSum += pl.r; byStrategy[k].rN++; }
+    const names = strategiesOf(t);
+    for (const k of names.length ? names : ["전략 없음"]) {
+      (byStrategy[k] ??= { pnl: 0, n: 0, w: 0, l: 0, rSum: 0, rN: 0 });
+      byStrategy[k].pnl += Number(t.pnl);
+      byStrategy[k].n++;
+      if (t.result === "win") byStrategy[k].w++;
+      if (t.result === "lose") byStrategy[k].l++;
+      const pl = planOf(t);
+      if (pl) { byStrategy[k].rSum += pl.r; byStrategy[k].rN++; }
+    }
   }
   const stratRows = Object.entries(byStrategy)
     .sort((a, b) => b[1].pnl - a[1].pnl)
@@ -1442,7 +1469,10 @@ function renderStats(panel) {
     </div>` +
     planVsRealCard(s) +
     `<div class="card">
-      <div class="list-head"><h2 class="list-title">전략별 성적</h2></div>
+      <div class="list-head">
+        <h2 class="list-title">전략별 성적</h2>
+        <span class="list-count">전략을 여러 개 고른 매매는 각 줄에 모두 잡힙니다</span>
+      </div>
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>전략</th><th>건수</th><th>승률</th><th>계획 R</th><th>누적 손익</th></tr></thead>
         <tbody>${stratRows || `<tr><td colspan="5" class="empty">기록 없음</td></tr>`}</tbody>
@@ -1585,7 +1615,7 @@ $("#csvBtn").addEventListener("click", () => {
         ? t.legs.map((l, i) => `${i + 1}) ${l.price} (${l.weight}%)`).join(" ")
         : "";
       return [
-        t.traded_at, t.symbol, t.strategy || "단일 진입", t.position === "long" ? "롱" : "숏",
+        t.traded_at, t.symbol, strategiesOf(t).join(" ") || "전략 없음", t.position === "long" ? "롱" : "숏",
         RESULT_KO[t.result], t.pnl,
         t.entry_price ?? "", legs, t.tp_price ?? "", t.sl_price ?? "",
         plan ? plan.r.toFixed(2) : "",

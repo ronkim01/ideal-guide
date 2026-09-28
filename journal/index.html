@@ -92,22 +92,12 @@
     <!-- 매매 계획 — 진입가·TP·SL로 계획 손익비를 계산한다 -->
     <fieldset class="plan">
       <legend class="plan-legend">매매 계획</legend>
-      <div class="plan-grid plan-grid-3">
-        <label class="field">
-          <span>전략</span>
-          <select id="fStrategy">
-            <option value="">단일 진입</option>
-            <option value="FVG">FVG (3구간)</option>
-            <option value="오더블럭">오더블럭 (3구간)</option>
-            <option value="추세">추세</option>
-            <option value="채널">채널</option>
-            <option value="유동성">유동성</option>
-            <option value="컵앤핸들">컵앤핸들</option>
-            <option value="다이아몬드헤드">다이아몬드헤드</option>
-            <option value="아담앤이브">아담앤이브</option>
-            <option value="기타">기타</option>
-          </select>
-        </label>
+      <div class="field strat-field">
+        <span>전략 <em>여러 개 고를 수 있습니다 · 안 고르면 전략 없음</em></span>
+        <div id="stratPicks" class="tagpicks"></div>
+      </div>
+
+      <div class="plan-grid plan-grid-2">
         <label class="field">
           <span>TP <em>목표가</em></span>
           <input id="fTp" type="number" step="any" inputmode="decimal" placeholder="69000" required />

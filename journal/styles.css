@@ -139,7 +139,13 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
+.plan-grid-2 { grid-template-columns: 1fr 1fr; }
 .plan-grid-3 { grid-template-columns: repeat(3, 1fr); margin-top: 9px; }
+.strat-field { margin-bottom: 10px; }
+.strat-field .tagpicks { margin-top: 2px; }
+.chip em {
+  font-style: normal; font-size: 0.64rem; opacity: .55; margin-left: 3px;
+}
 .plan-memo {
   grid-column: 1 / -1;
   margin: 0;

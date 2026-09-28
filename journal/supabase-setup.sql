@@ -18,7 +18,8 @@ create table if not exists public.trades (
   entry_price numeric(20,8),                              -- 진입가 (구간이 여럿이면 가중평균)
   tp_price    numeric(20,8),                              -- 목표가 (Take Profit)
   sl_price    numeric(20,8),                              -- 손절가 (Stop Loss)
-  strategy    text,                                       -- FVG / 오더블럭 / 기타
+  strategy    text,                                       -- 전략 (첫 번째 것. 호환용)
+  strategies  text[],                                     -- 전략 목록 (여러 개 고를 수 있다)
   legs        jsonb,                                      -- 분할 진입 구간 [{price, weight}]
   memo       text,                                        -- 매매 복기 (분할 매수·매도 내역 포함)
   tags       text[] not null default '{}',
@@ -32,6 +33,7 @@ alter table public.trades add column if not exists entry_price numeric(20,8);
 alter table public.trades add column if not exists tp_price    numeric(20,8);
 alter table public.trades add column if not exists sl_price    numeric(20,8);
 alter table public.trades add column if not exists strategy    text;
+alter table public.trades add column if not exists strategies  text[];
 alter table public.trades add column if not exists legs        jsonb;
 
 -- 2) 조회 성능용 인덱스 (날짜 내림차순 조회가 기본)
