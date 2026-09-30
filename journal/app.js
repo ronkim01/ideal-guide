@@ -8,7 +8,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.28a";
+const APP_VERSION = "2026.09.30a";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
@@ -34,6 +34,8 @@ const state = {
   maxLossPct: localStorage.getItem("mj.maxLossPct") || "1",
   leverage: localStorage.getItem("mj.leverage") || "1",
   filters: { period: "all", symbol: "all", side: "all", result: "all" },
+  openDates: new Set(),   // 전체 탭에서 펼쳐둔 날짜
+  datesOpened: false,     // 최근 날짜 자동 펼침을 한 번만 하기 위한 표시
 };
 
 /* ── 유틸 ─────────────────────────────────── */
@@ -1031,6 +1033,71 @@ function tradeRows(trades, emptyText) {
   }).join("") + `</ul>`;
 }
 
+const DOW_KO = ["일", "월", "화", "수", "목", "금", "토"];
+
+/* 전체 탭 목록을 날짜로 묶는다. 날짜 줄만 봐도 그날 성적이 보이고,
+   눌러서 그날 매매를 펼친다. */
+function groupByDate(trades) {
+  const map = new Map();
+  for (const t of trades) {
+    if (!map.has(t.traded_at)) map.set(t.traded_at, []);
+    map.get(t.traded_at).push(t);
+  }
+  return [...map.entries()].map(([date, items]) => {
+    const wins = items.filter((t) => t.result === "win").length;
+    const loses = items.filter((t) => t.result === "lose").length;
+    const draws = items.filter((t) => t.result === "draw").length;
+    const decided = wins + loses;
+    return {
+      date, items,
+      total: items.reduce((a, t) => a + Number(t.pnl), 0),
+      wins, loses, draws,
+      winRate: decided ? (wins / decided) * 100 : null,
+    };
+  });
+}
+
+function groupedListCard(title, trades, emptyText, cap = 0) {
+  const shown = cap && trades.length > cap ? trades.slice(0, cap) : trades;
+  const more = trades.length - shown.length;
+  const groups = groupByDate(shown);
+
+  // 처음 열 때만 가장 최근 날짜를 펼쳐둔다.
+  // 한 번만 해야 한다 — 매번 하면 마지막 남은 날짜를 접는 순간 다시 펼쳐진다.
+  if (!state.datesOpened && groups.length) {
+    state.openDates.add(groups[0].date);
+    state.datesOpened = true;
+  }
+
+  const body = !groups.length
+    ? `<p class="empty">${esc(emptyText)}</p>`
+    : groups.map((g) => {
+        const open = state.openDates.has(g.date);
+        const d = new Date(g.date + "T00:00:00");
+        return `
+        <div class="daygroup${open ? " is-open" : ""}">
+          <button type="button" class="day-head" data-date="${esc(g.date)}" aria-expanded="${open}">
+            <span class="day-caret">${open ? "▾" : "▸"}</span>
+            <span class="day-date">${esc(g.date.slice(5).replace("-", "."))}
+              <em>${DOW_KO[d.getDay()]}</em></span>
+            <span class="day-meta">${g.items.length}건 · ${g.wins}승 ${g.draws}무 ${g.loses}패${
+              g.winRate === null ? "" : ` · 승률 ${g.winRate.toFixed(0)}%`}</span>
+            <span class="day-pnl ${toneOf(g.total)}">${money(g.total, { sign: true })}</span>
+          </button>
+          ${open ? tradeRows(g.items, "") : ""}
+        </div>`;
+      }).join("");
+
+  return `<div class="card">
+    <div class="list-head">
+      <h2 class="list-title">${esc(title)}</h2>
+      <span class="list-count">${groups.length}일 · ${trades.length}건</span>
+    </div>
+    ${body}
+    ${more > 0 ? `<p class="empty">최근 ${cap}건만 표시했습니다 · ${more}건 더 있음 (필터로 좁혀보세요)</p>` : ""}
+  </div>`;
+}
+
 function listCard(title, trades, emptyText, cap = 0) {
   const shown = cap && trades.length > cap ? trades.slice(0, cap) : trades;
   const more = trades.length - shown.length;
@@ -1317,7 +1384,7 @@ function renderAll(panel) {
     </div>` +
     heroTile("누적 실현 손익", s.total, `${list.length}건 · ${s.wins}승 ${s.draws}무 ${s.loses}패`) +
     chartCard("누적 손익 곡선", "매매 순서대로 누적", "equityBox", PNL_LEGEND) +
-    listCard("전체 매매 내역", list, "조건에 맞는 기록이 없습니다.", 200);
+    groupedListCard("전체 매매 내역", list, "조건에 맞는 기록이 없습니다.", 200);
 
   mountChart("equityBox", (w) => equityCurveSVG(s.curve, w), (i) => {
     const p = s.curve[i];
@@ -1593,6 +1660,13 @@ function render() {
 }
 
 $("#panels").addEventListener("click", (e) => {
+  const day = e.target.closest("[data-date]");
+  if (day) {
+    const d = day.dataset.date;
+    state.openDates.has(d) ? state.openDates.delete(d) : state.openDates.add(d);
+    render();
+    return;
+  }
   const ed = e.target.closest("[data-edit]");
   const cp = e.target.closest("[data-copy]");
   const dl = e.target.closest("[data-del]");

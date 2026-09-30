@@ -471,6 +471,39 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 
 .empty { text-align: center; color: var(--muted); padding: 26px 10px; font-size: 0.88rem; }
 
+/* ── 날짜별 묶음 (전체 탭) ───────────────── */
+.daygroup { border-top: 1px solid var(--border); }
+.daygroup:first-of-type { border-top: none; }
+
+.day-head {
+  display: grid;
+  grid-template-columns: 14px 76px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 11px 4px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.day-head:hover { background: var(--hover); }
+.daygroup.is-open .day-head { background: var(--hover); }
+
+.day-caret { color: var(--muted); font-size: 0.7rem; }
+.day-date { font-size: 0.86rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.day-date em { font-style: normal; font-size: 0.72rem; font-weight: 600; color: var(--muted); margin-left: 2px; }
+.day-meta { font-size: 0.75rem; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.day-pnl { font-size: 0.92rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* 날짜 아래로 들어간 매매는 살짝 들여쓴다.
+   날짜 줄에 이미 날짜가 있으니 각 행의 날짜는 지운다 */
+.daygroup .rows { padding-left: 22px; border-top: 1px solid var(--border); }
+.daygroup .row { grid-template-columns: 1fr auto; }
+.daygroup .row-date { display: none; }
+
 /* ── 필터 ────────────────────────────────── */
 .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
 .filters .field { flex: 1 1 120px; }
@@ -655,6 +688,10 @@ button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
   .pvr-row { grid-template-columns: auto 1fr 46px; gap: 8px; }
   .pvr-name { font-size: 0.74rem; }
   .row { grid-template-columns: 46px 1fr auto; gap: 8px; }
+  .day-head { grid-template-columns: 12px 62px 1fr auto; gap: 6px; padding: 10px 2px; }
+  .day-meta { font-size: 0.7rem; }
+  .daygroup .rows { padding-left: 10px; }
+  .daygroup .row { grid-template-columns: 1fr auto; }
   .note { min-width: 130px; }
   .tabs { padding: 3px; gap: 2px; }
   .tab { font-size: 0.78rem; padding: 8px 2px; }
