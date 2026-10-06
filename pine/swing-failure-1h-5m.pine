@@ -1,0 +1,301 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// 1시간봉 스윙 실패(Swing Failure) + 5분봉 재확인 진입
+//
+// 룰 두 개
+//   ① 1시간봉 스윙 찍기  : 가운데 봉의 저점이 앞·뒤 봉보다 모두 낮으면 스윙 저점 (고점은 반대).
+//                          세 번째 봉이 마감돼야 확정 — 미리 긋지 않는다.
+//   ② 스윙 실패          : 1시간봉이 스윙 저점을 꼬리로 뚫고(손절 털기) 다시 선 위에서 마감.
+//                          뚫린 것 자체가 아니라 "마감"이 신호. 선 아래 마감이면 그냥 돌파.
+//
+// 영상에서 바꾼 세 가지
+//   1. 신호 시간과 진입 시간 분리 : 아시아 시간에 나온 신호도 버리지 않고,
+//                                   거래량이 들어오는 시간대(런던·뉴욕)까지 기다렸다가 진입.
+//   2. 5분봉 재확인              : 1시간봉 마감에 바로 들어가지 않고, 5분봉이 눌려서
+//                                   5분봉 스윙 저점을 한 번 더 털고 위에서 마감할 때 진입.
+//                                   손절은 그대로 1시간봉 꼬리 밑 → 손절 거리가 줄어든다.
+//   3. 익절                      : 큰 추세와 같은 방향이면 반대쪽 스윙 끝까지,
+//                                   역추세면 바로 위(아래) 매물대 = 가장 가까운 스윙에서 짧게.
+//
+// 사용법 : 5분봉 차트에 붙인다. (1시간봉 차트라면 "5분봉 재확인"을 끈다)
+// 신호가 없는 날은 아무것도 안 한다 — 억지로 작은 스윙을 찾지 않는다.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("1H 스윙 실패 + 5분봉 재확인", shorttitle = "SFP 1H·5m", overlay = true,
+     initial_capital = 10000,
+     commission_type = strategy.commission.percent, commission_value = 0.04,
+     slippage = 1, pyramiding = 0, process_orders_on_close = true,
+     margin_long = 0, margin_short = 0)
+
+// ── 입력 ────────────────────────────────────────────────────────────────────
+const string G_SWING = "① 1시간봉 스윙"
+htf         = input.timeframe("60", "스윙 시간대", group = G_SWING)
+swingLife   = input.int(48, "스윙 유효 기간 (스윙 시간대 봉 수)", minval = 6, group = G_SWING,
+     tooltip = "48 = 1시간봉 기준 이틀. 전날 스윙이 두세 개뿐이면 그 전날 것까지 보도록 넉넉히 둔다.")
+minStrength = input.float(0.0, "마감 강도 최소 (%)", minval = 0, maxval = 100, step = 5, group = G_SWING,
+     tooltip = "(종가 - 스윙선) ÷ 봉 길이. 0이면 선 안쪽 마감이면 통과. 높일수록 몸통이 길게 올라온 강한 실패만 잡는다.")
+allowLong   = input.bool(true, "롱", inline = "side", group = G_SWING)
+allowShort  = input.bool(true, "숏", inline = "side", group = G_SWING)
+
+const string G_TIME = "② 진입 시간 (신호와 분리)"
+useSess  = input.bool(true, "거래량 시간대에만 진입", group = G_TIME)
+sess     = input.session("0800-2100", "진입 허용 시간", group = G_TIME,
+     tooltip = "기본: 런던 개장 ~ 뉴욕 오후 (런던 시간 기준).")
+tz       = input.string("Europe/London", "시간대 기준",
+     options = ["Europe/London", "Asia/Seoul", "America/New_York", "UTC"], group = G_TIME)
+setupTTL = input.int(12, "신호 유효 시간 (스윙 시간대 봉 수)", minval = 1, group = G_TIME,
+     tooltip = "1시간봉 신호가 나온 뒤 이만큼 안에 진입이 안 나오면 버린다.")
+
+const string STOP_HTF = "1시간봉 꼬리 밑 (보수)"
+const string STOP_LTF = "5분봉 꼬리 밑 (공격)"
+const string G_ENTRY = "③ 5분봉 재확인"
+use5m    = input.bool(true, "5분봉 스윙 실패로 재확인 후 진입", group = G_ENTRY,
+     tooltip = "끄면 1시간봉 신호 뒤 첫 허용 시간 봉에서 바로 진입 (원래 모델).")
+stopMode = input.string(STOP_HTF, "손절 위치", options = [STOP_HTF, STOP_LTF], group = G_ENTRY,
+     tooltip = "1시간봉 꼬리 밑: 넓지만 잔흔들림에 안 털림. 5분봉 꼬리 밑: 손익비는 좋아지지만 잘 털림.")
+stopBuf  = input.float(0.02, "손절 여유 (%)", minval = 0, step = 0.01, group = G_ENTRY)
+riskPct  = input.float(1.0, "1회 손실 한도 (자본 %)", minval = 0.1, step = 0.1, group = G_ENTRY)
+
+const string TP_FAR   = "반대쪽 스윙 끝"
+const string TP_NEAR  = "가장 가까운 스윙 (매물대)"
+const string TP_FIXED = "손익비 고정"
+const string G_TP = "④ 익절"
+trendTf   = input.timeframe("240", "큰 추세 시간대", group = G_TP)
+trendLen  = input.int(50, "큰 추세 EMA 길이", minval = 1, group = G_TP)
+tpWith    = input.string(TP_FAR, "순추세 매매 익절", options = [TP_FAR, TP_NEAR, TP_FIXED], group = G_TP)
+tpCounter = input.string(TP_NEAR, "역추세 매매 익절", options = [TP_FAR, TP_NEAR, TP_FIXED], group = G_TP)
+fixedRR   = input.float(2.0, "고정 손익비 (스윙이 없을 때도 사용)", minval = 0.5, step = 0.5, group = G_TP)
+minRR     = input.float(1.5, "최소 손익비 — 미만이면 진입 안 함", minval = 0, step = 0.5, group = G_TP)
+
+// ── 1시간봉 계산 (스윙 시간대 안에서 돈다) ─────────────────────────────────────
+// 살아 있는 스윙 저점·고점을 들고 있다가, 이번 봉이 그 선을
+//   꼬리로 뚫고 안에서 마감 → 스윙 실패 (선은 지운다: 손절이 이미 쓸렸다)
+//   뚫고 밖에서 마감       → 돌파 (선을 지우고, 이 봉은 신호 아님)
+f_htf() =>
+    var lowLv   = array.new<float>()
+    var lowBar  = array.new<int>()
+    var highLv  = array.new<float>()
+    var highBar = array.new<int>()
+
+    bool  bull      = false
+    bool  brokeLow  = false
+    float bullLevel = na
+    bool  bear      = false
+    bool  brokeHigh = false
+    float bearLevel = na
+
+    if lowLv.size() > 0
+        for i = lowLv.size() - 1 to 0
+            float lv = lowLv.get(i)
+            if bar_index - lowBar.get(i) > swingLife
+                lowLv.remove(i)
+                lowBar.remove(i)
+            else if low < lv
+                if close > lv
+                    bull      := true
+                    bullLevel := na(bullLevel) ? lv : math.max(bullLevel, lv)
+                else
+                    brokeLow := true
+                lowLv.remove(i)
+                lowBar.remove(i)
+
+    if highLv.size() > 0
+        for i = highLv.size() - 1 to 0
+            float lv = highLv.get(i)
+            if bar_index - highBar.get(i) > swingLife
+                highLv.remove(i)
+                highBar.remove(i)
+            else if high > lv
+                if close < lv
+                    bear      := true
+                    bearLevel := na(bearLevel) ? lv : math.min(bearLevel, lv)
+                else
+                    brokeHigh := true
+                highLv.remove(i)
+                highBar.remove(i)
+
+    // 마감이 선에서 멀수록 강한 신호
+    float rng = high - low
+    if bull and rng > 0 and (close - bullLevel) / rng * 100 < minStrength
+        bull := false
+    if bear and rng > 0 and (bearLevel - close) / rng * 100 < minStrength
+        bear := false
+    // 한쪽 스윙은 털고 다른 쪽은 돌파했거나, 위아래를 다 턴 봉은 방향이 없다
+    if brokeLow or brokeHigh or (bull and bear)
+        bull := false
+        bear := false
+
+    // 익절 후보: 남아 있는 반대쪽 스윙 중 가장 가까운 것 / 가장 먼 것
+    float upNear = na
+    float upFar  = na
+    for lv in highLv
+        if lv > close
+            upNear := na(upNear) ? lv : math.min(upNear, lv)
+            upFar  := na(upFar)  ? lv : math.max(upFar, lv)
+    float dnNear = na
+    float dnFar  = na
+    for lv in lowLv
+        if lv < close
+            dnNear := na(dnNear) ? lv : math.max(dnNear, lv)
+            dnFar  := na(dnFar)  ? lv : math.min(dnFar, lv)
+
+    // 이번 봉 마감으로 확정되는 새 스윙 (가운데 봉 = 한 봉 전)
+    if low[1] < low[2] and low[1] < low
+        lowLv.push(low[1])
+        lowBar.push(bar_index - 1)
+    if high[1] > high[2] and high[1] > high
+        highLv.push(high[1])
+        highBar.push(bar_index - 1)
+
+    float lastLow  = lowLv.size()  > 0 ? lowLv.last()  : na
+    float lastHigh = highLv.size() > 0 ? highLv.last() : na
+
+    // 한 봉 전 값을 돌려준다 + lookahead_on → 마감된 1시간봉만 쓰고, 다시 그려지지 않는다
+    [bull[1], low[1], bullLevel[1], upNear[1], upFar[1],
+     bear[1], high[1], bearLevel[1], dnNear[1], dnFar[1],
+     lastLow[1], lastHigh[1]]
+
+[hBull, hBullWick, hBullLevel, hUpNear, hUpFar, hBear, hBearWick, hBearLevel, hDnNear, hDnFar, hLastLow, hLastHigh] =
+     request.security(syminfo.tickerid, htf, f_htf(), lookahead = barmerge.lookahead_on)
+
+[tClose, tEma] = request.security(syminfo.tickerid, trendTf, [close[1], ta.ema(close, trendLen)[1]],
+     lookahead = barmerge.lookahead_on)
+int bigTrend = tClose > tEma ? 1 : tClose < tEma ? -1 : 0
+
+bool newHtfBar = timeframe.change(htf)
+bool inSess    = not useSess or not na(time(timeframe.period, sess, tz))
+int  htfMs     = timeframe.in_seconds(htf) * 1000
+bool tfOk      = timeframe.in_seconds() <= timeframe.in_seconds(htf)
+
+// ── 셋업 상태 ────────────────────────────────────────────────────────────────
+var int   setDir   = 0      // 1 = 롱 대기, -1 = 숏 대기, 0 = 없음
+var float setStop  = na     // 1시간봉 꼬리 끝 = 손절 기준
+var float setLevel = na     // 털린 스윙선
+var float setNear  = na
+var float setFar   = na
+var int   setStart = 0
+var int   setEnd   = 0
+var ltfLv = array.new<float>()   // 셋업 뒤 생긴 5분봉 스윙 (롱이면 저점, 숏이면 고점)
+
+bool sigLong  = newHtfBar and hBull and allowLong
+bool sigShort = newHtfBar and hBear and allowShort
+
+if strategy.position_size == 0 and (sigLong or sigShort)
+    setDir   := sigLong ? 1 : -1
+    setStop  := sigLong ? hBullWick : hBearWick
+    setLevel := sigLong ? hBullLevel : hBearLevel
+    setNear  := sigLong ? hUpNear : hDnNear
+    setFar   := sigLong ? hUpFar : hDnFar
+    setStart := time
+    setEnd   := time + setupTTL * htfMs
+    ltfLv.clear()
+    alert(str.format("{0} 1시간봉 {1} 스윙 실패 — 스윙선 {2} 털고 안으로 마감. 손절 기준 {3}",
+         syminfo.ticker, sigLong ? "롱" : "숏",
+         str.tostring(setLevel, format.mintick), str.tostring(setStop, format.mintick)),
+         alert.freq_once_per_bar_close)
+
+// 1시간봉 꼬리를 넘어가면 아침 신호 자체가 틀린 것 / 시간이 지나도 버린다
+if setDir == 1 and close < setStop
+    setDir := 0
+if setDir == -1 and close > setStop
+    setDir := 0
+if setDir != 0 and time >= setEnd
+    setDir := 0
+
+// ── 5분봉 재확인: 작은 시간대에서 같은 패턴이 한 번 더 ─────────────────────────
+bool ltfFail  = false
+bool ltfBroke = false
+if setDir != 0 and ltfLv.size() > 0
+    for i = ltfLv.size() - 1 to 0
+        float lv = ltfLv.get(i)
+        if setDir == 1 and low < lv
+            if close > lv
+                ltfFail := true
+            else
+                ltfBroke := true
+            ltfLv.remove(i)
+        else if setDir == -1 and high > lv
+            if close < lv
+                ltfFail := true
+            else
+                ltfBroke := true
+            ltfLv.remove(i)
+
+// 셋업 이후에 세 봉이 다 생긴 5분봉 스윙만, 1시간봉 손절선 안쪽만 등록
+if setDir == 1 and low[1] < low[2] and low[1] < low and time[2] >= setStart and low[1] > setStop
+    ltfLv.push(low[1])
+if setDir == -1 and high[1] > high[2] and high[1] > high and time[2] >= setStart and high[1] < setStop
+    ltfLv.push(high[1])
+
+// ── 진입 ────────────────────────────────────────────────────────────────────
+bool trigger = setDir != 0 and strategy.position_size == 0 and inSess and tfOk and
+     (use5m ? ltfFail and not ltfBroke : true)
+
+var float posStop = na
+var float posTp   = na
+
+if trigger
+    float entryPx = close
+    float base    = use5m and stopMode == STOP_LTF ? (setDir == 1 ? low : high) : setStop
+    float stopPx  = base * (1 - setDir * stopBuf / 100)
+    float risk    = (entryPx - stopPx) * setDir
+
+    bool   withTrend = bigTrend == setDir
+    string tpMode    = withTrend ? tpWith : tpCounter
+    float  swingTp   = tpMode == TP_NEAR ? setNear : tpMode == TP_FAR ? setFar : na
+    bool   swingOk   = not na(swingTp) and (swingTp - entryPx) * setDir > 0
+    float  tpPx      = swingOk ? swingTp : entryPx + setDir * risk * fixedRR
+    float  rr        = risk > 0 ? (tpPx - entryPx) * setDir / risk : na
+
+    // 손익비가 모자라면 이번 눌림은 넘기고 셋업은 살려둔다 — 더 깊이 눌리면 손익비가 좋아진다
+    if risk > 0 and rr >= minRR
+        float qty = strategy.equity * riskPct / 100 / (risk * syminfo.pointvalue)
+        string note = str.format("{0} RR {1,number,#.#}", withTrend ? "순추세" : "역추세", rr)
+        if setDir == 1
+            strategy.entry("롱", strategy.long, qty = qty, comment = note)
+            strategy.exit("롱 청산", "롱", stop = stopPx, limit = tpPx)
+        else
+            strategy.entry("숏", strategy.short, qty = qty, comment = note)
+            strategy.exit("숏 청산", "숏", stop = stopPx, limit = tpPx)
+        posStop := stopPx
+        posTp   := tpPx
+        alert(str.format("{0} {1} 진입 {2} / 손절 {3} / 익절 {4} ({5})", syminfo.ticker,
+             setDir == 1 ? "롱" : "숏", str.tostring(entryPx, format.mintick),
+             str.tostring(stopPx, format.mintick), str.tostring(tpPx, format.mintick), note),
+             alert.freq_once_per_bar_close)
+        setDir := 0
+
+// ── 그리기 ──────────────────────────────────────────────────────────────────
+plot(hLastHigh, "1H 최근 스윙 고점", color.new(color.red, 40), 1, plot.style_linebr)
+plot(hLastLow,  "1H 최근 스윙 저점", color.new(color.teal, 40), 1, plot.style_linebr)
+plot(setDir != 0 ? setLevel : na, "털린 스윙선", color.new(color.orange, 0), 2, plot.style_linebr)
+plot(setDir != 0 ? setStop : na, "셋업 손절 기준 (1H 꼬리)", color.new(color.gray, 0), 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? posStop : na, "손절", color.red, 2, plot.style_linebr)
+plot(strategy.position_size != 0 ? posTp : na, "익절", color.green, 2, plot.style_linebr)
+
+plotshape(sigLong and setDir == 1, "1H 롱 스윙 실패", shape.triangleup, location.belowbar,
+     color.teal, text = "1H SFP", textcolor = color.teal, size = size.small)
+plotshape(sigShort and setDir == -1, "1H 숏 스윙 실패", shape.triangledown, location.abovebar,
+     color.red, text = "1H SFP", textcolor = color.red, size = size.small)
+plotshape(ltfFail and not ltfBroke and setDir != 0 and inSess, "5분봉 재확인 (손익비 부족)",
+     shape.xcross, location.belowbar, color.new(color.gray, 30), size = size.tiny)
+
+bgcolor(useSess and not inSess ? color.new(color.gray, 92) : na, title = "진입 금지 시간")
+
+// ── 상태판 ──────────────────────────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 4, bgcolor = color.new(color.black, 20),
+     border_width = 1, border_color = color.new(color.gray, 60))
+if barstate.islast
+    string st = not tfOk ? "차트 시간대를 " + htf + " 이하로" :
+         strategy.position_size > 0 ? "롱 보유" : strategy.position_size < 0 ? "숏 보유" :
+         setDir == 1 ? "롱 대기 (5분봉 눌림 기다림)" : setDir == -1 ? "숏 대기 (5분봉 반등 기다림)" :
+         "신호 없음 — 쉬는 날"
+    table.cell(info, 0, 0, "상태", text_color = color.silver, text_size = size.small)
+    table.cell(info, 1, 0, st, text_color = color.white, text_size = size.small)
+    table.cell(info, 0, 1, "큰 추세", text_color = color.silver, text_size = size.small)
+    table.cell(info, 1, 1, bigTrend == 1 ? "상승" : bigTrend == -1 ? "하락" : "-",
+         text_color = bigTrend == 1 ? color.lime : bigTrend == -1 ? color.red : color.white, text_size = size.small)
+    table.cell(info, 0, 2, "진입 시간", text_color = color.silver, text_size = size.small)
+    table.cell(info, 1, 2, inSess ? "열림" : "닫힘 (기다림)", text_color = color.white, text_size = size.small)
+    table.cell(info, 0, 3, "손절 기준", text_color = color.silver, text_size = size.small)
+    table.cell(info, 1, 3, setDir != 0 ? str.tostring(setStop, format.mintick) : "-",
+         text_color = color.white, text_size = size.small)

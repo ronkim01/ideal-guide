@@ -8,14 +8,14 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "../config.js";
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // 화면 오른쪽 아래에 표시된다. 이 숫자가 안 바뀌면 브라우저가 옛 파일을 쓰고 있는 것.
-const APP_VERSION = "2026.09.30a";
+const APP_VERSION = "2026.10.06a";
 
 const TAGS = ["계획대로", "추세추종", "돌파", "역추세", "분할매수",
               "손절지연", "FOMO", "뇌동매매", "익절조급", "레버리지과다"];
 
 /* 전략 — 한 매매에 여러 개 붙일 수 있다 (예: FVG + 유동성) */
 const STRATEGIES = ["FVG", "오더블럭", "추세", "채널", "유동성",
-                    "컵앤핸들", "다이아몬드헤드", "아담앤이브", "기타"];
+                    "스윙실패", "컵앤핸들", "다이아몬드헤드", "아담앤이브", "기타"];
 
 const state = {
   trades: [],
