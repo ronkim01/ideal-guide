@@ -150,15 +150,11 @@ f_htf() =>
     float lastHigh = highLv.size() > 0 ? highLv.last() : na
 
     // 한 봉 전 값을 돌려준다 + lookahead_on → 마감된 1시간봉만 쓰고, 다시 그려지지 않는다
-    [bull[1], low[1], bullLevel[1], upNear[1], upFar[1],
-     bear[1], high[1], bearLevel[1], dnNear[1], dnFar[1],
-     lastLow[1], lastHigh[1]]
+    [bull[1], low[1], bullLevel[1], upNear[1], upFar[1], bear[1], high[1], bearLevel[1], dnNear[1], dnFar[1], lastLow[1], lastHigh[1]]
 
-[hBull, hBullWick, hBullLevel, hUpNear, hUpFar, hBear, hBearWick, hBearLevel, hDnNear, hDnFar, hLastLow, hLastHigh] =
-     request.security(syminfo.tickerid, htf, f_htf(), lookahead = barmerge.lookahead_on)
+[hBull, hBullWick, hBullLevel, hUpNear, hUpFar, hBear, hBearWick, hBearLevel, hDnNear, hDnFar, hLastLow, hLastHigh] = request.security(syminfo.tickerid, htf, f_htf(), lookahead = barmerge.lookahead_on)
 
-[tClose, tEma] = request.security(syminfo.tickerid, trendTf, [close[1], ta.ema(close, trendLen)[1]],
-     lookahead = barmerge.lookahead_on)
+[tClose, tEma] = request.security(syminfo.tickerid, trendTf, [close[1], ta.ema(close, trendLen)[1]], lookahead = barmerge.lookahead_on)
 int bigTrend = tClose > tEma ? 1 : tClose < tEma ? -1 : 0
 
 bool newHtfBar = timeframe.change(htf)
