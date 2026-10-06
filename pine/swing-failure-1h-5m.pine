@@ -20,38 +20,27 @@
 // 사용법 : 5분봉 차트에 붙인다. (1시간봉 차트라면 "5분봉 재확인"을 끈다)
 // 신호가 없는 날은 아무것도 안 한다 — 억지로 작은 스윙을 찾지 않는다.
 // ─────────────────────────────────────────────────────────────────────────────
-strategy("1H 스윙 실패 + 5분봉 재확인", shorttitle = "SFP 1H·5m", overlay = true,
-     initial_capital = 10000,
-     commission_type = strategy.commission.percent, commission_value = 0.04,
-     slippage = 1, pyramiding = 0, process_orders_on_close = true,
-     margin_long = 0, margin_short = 0)
+strategy("1H 스윙 실패 + 5분봉 재확인", shorttitle = "SFP 1H 5m", overlay = true, initial_capital = 10000, commission_type = strategy.commission.percent, commission_value = 0.04, slippage = 1, pyramiding = 0, process_orders_on_close = true, margin_long = 0, margin_short = 0)
 
 // ── 입력 ────────────────────────────────────────────────────────────────────
 const string G_SWING = "① 1시간봉 스윙"
 htf         = input.timeframe("60", "스윙 시간대", group = G_SWING)
-swingLife   = input.int(48, "스윙 유효 기간 (스윙 시간대 봉 수)", minval = 6, group = G_SWING,
-     tooltip = "48 = 1시간봉 기준 이틀. 전날 스윙이 두세 개뿐이면 그 전날 것까지 보도록 넉넉히 둔다.")
-minStrength = input.float(0.0, "마감 강도 최소 (%)", minval = 0, maxval = 100, step = 5, group = G_SWING,
-     tooltip = "(종가 - 스윙선) ÷ 봉 길이. 0이면 선 안쪽 마감이면 통과. 높일수록 몸통이 길게 올라온 강한 실패만 잡는다.")
+swingLife   = input.int(48, "스윙 유효 기간 (스윙 시간대 봉 수)", minval = 6, group = G_SWING, tooltip = "48 = 1시간봉 기준 이틀. 전날 스윙이 두세 개뿐이면 그 전날 것까지 보도록 넉넉히 둔다.")
+minStrength = input.float(0.0, "마감 강도 최소 (%)", minval = 0, maxval = 100, step = 5, group = G_SWING, tooltip = "(종가 - 스윙선) ÷ 봉 길이. 0이면 선 안쪽 마감이면 통과. 높일수록 몸통이 길게 올라온 강한 실패만 잡는다.")
 allowLong   = input.bool(true, "롱", inline = "side", group = G_SWING)
 allowShort  = input.bool(true, "숏", inline = "side", group = G_SWING)
 
 const string G_TIME = "② 진입 시간 (신호와 분리)"
 useSess  = input.bool(true, "거래량 시간대에만 진입", group = G_TIME)
-sess     = input.session("0800-2100", "진입 허용 시간", group = G_TIME,
-     tooltip = "기본: 런던 개장 ~ 뉴욕 오후 (런던 시간 기준).")
-tz       = input.string("Europe/London", "시간대 기준",
-     options = ["Europe/London", "Asia/Seoul", "America/New_York", "UTC"], group = G_TIME)
-setupTTL = input.int(12, "신호 유효 시간 (스윙 시간대 봉 수)", minval = 1, group = G_TIME,
-     tooltip = "1시간봉 신호가 나온 뒤 이만큼 안에 진입이 안 나오면 버린다.")
+sess     = input.session("0800-2100", "진입 허용 시간", group = G_TIME, tooltip = "기본: 런던 개장 ~ 뉴욕 오후 (런던 시간 기준).")
+tz       = input.string("Europe/London", "시간대 기준", options = ["Europe/London", "Asia/Seoul", "America/New_York", "UTC"], group = G_TIME)
+setupTTL = input.int(12, "신호 유효 시간 (스윙 시간대 봉 수)", minval = 1, group = G_TIME, tooltip = "1시간봉 신호가 나온 뒤 이만큼 안에 진입이 안 나오면 버린다.")
 
 const string STOP_HTF = "1시간봉 꼬리 밑 (보수)"
 const string STOP_LTF = "5분봉 꼬리 밑 (공격)"
 const string G_ENTRY = "③ 5분봉 재확인"
-use5m    = input.bool(true, "5분봉 스윙 실패로 재확인 후 진입", group = G_ENTRY,
-     tooltip = "끄면 1시간봉 신호 뒤 첫 허용 시간 봉에서 바로 진입 (원래 모델).")
-stopMode = input.string(STOP_HTF, "손절 위치", options = [STOP_HTF, STOP_LTF], group = G_ENTRY,
-     tooltip = "1시간봉 꼬리 밑: 넓지만 잔흔들림에 안 털림. 5분봉 꼬리 밑: 손익비는 좋아지지만 잘 털림.")
+use5m    = input.bool(true, "5분봉 스윙 실패로 재확인 후 진입", group = G_ENTRY, tooltip = "끄면 1시간봉 신호 뒤 첫 허용 시간 봉에서 바로 진입 (원래 모델).")
+stopMode = input.string(STOP_HTF, "손절 위치", options = [STOP_HTF, STOP_LTF], group = G_ENTRY, tooltip = "1시간봉 꼬리 밑: 넓지만 잔흔들림에 안 털림. 5분봉 꼬리 밑: 손익비는 좋아지지만 잘 털림.")
 stopBuf  = input.float(0.02, "손절 여유 (%)", minval = 0, step = 0.01, group = G_ENTRY)
 riskPct  = input.float(1.0, "1회 손실 한도 (자본 %)", minval = 0.1, step = 0.1, group = G_ENTRY)
 
@@ -184,10 +173,8 @@ if strategy.position_size == 0 and (sigLong or sigShort)
     setStart := time
     setEnd   := time + setupTTL * htfMs
     ltfLv.clear()
-    alert(str.format("{0} 1시간봉 {1} 스윙 실패 — 스윙선 {2} 털고 안으로 마감. 손절 기준 {3}",
-         syminfo.ticker, sigLong ? "롱" : "숏",
-         str.tostring(setLevel, format.mintick), str.tostring(setStop, format.mintick)),
-         alert.freq_once_per_bar_close)
+    string sigMsg = syminfo.ticker + " 1시간봉 " + (sigLong ? "롱" : "숏") + " 스윙 실패. 스윙선 " + str.tostring(setLevel, format.mintick) + " / 손절 기준 " + str.tostring(setStop, format.mintick)
+    alert(sigMsg, alert.freq_once_per_bar_close)
 
 // 1시간봉 꼬리를 넘어가면 아침 신호 자체가 틀린 것 / 시간이 지나도 버린다
 if setDir == 1 and close < setStop
@@ -223,8 +210,8 @@ if setDir == -1 and high[1] > high[2] and high[1] > high and time[2] >= setStart
     ltfLv.push(high[1])
 
 // ── 진입 ────────────────────────────────────────────────────────────────────
-bool trigger = setDir != 0 and strategy.position_size == 0 and inSess and tfOk and
-     (use5m ? ltfFail and not ltfBroke : true)
+bool confirmOk = use5m ? (ltfFail and not ltfBroke) : true
+bool trigger = setDir != 0 and strategy.position_size == 0 and inSess and tfOk and confirmOk
 
 var float posStop = na
 var float posTp   = na
@@ -245,7 +232,7 @@ if trigger
     // 손익비가 모자라면 이번 눌림은 넘기고 셋업은 살려둔다 — 더 깊이 눌리면 손익비가 좋아진다
     if risk > 0 and rr >= minRR
         float qty = strategy.equity * riskPct / 100 / (risk * syminfo.pointvalue)
-        string note = str.format("{0} RR {1,number,#.#}", withTrend ? "순추세" : "역추세", rr)
+        string note = (withTrend ? "순추세" : "역추세") + " RR " + str.tostring(rr, "#.#")
         if setDir == 1
             strategy.entry("롱", strategy.long, qty = qty, comment = note)
             strategy.exit("롱 청산", "롱", stop = stopPx, limit = tpPx)
@@ -254,10 +241,8 @@ if trigger
             strategy.exit("숏 청산", "숏", stop = stopPx, limit = tpPx)
         posStop := stopPx
         posTp   := tpPx
-        alert(str.format("{0} {1} 진입 {2} / 손절 {3} / 익절 {4} ({5})", syminfo.ticker,
-             setDir == 1 ? "롱" : "숏", str.tostring(entryPx, format.mintick),
-             str.tostring(stopPx, format.mintick), str.tostring(tpPx, format.mintick), note),
-             alert.freq_once_per_bar_close)
+        string entMsg = syminfo.ticker + (setDir == 1 ? " 롱" : " 숏") + " 진입 " + str.tostring(entryPx, format.mintick) + " / 손절 " + str.tostring(stopPx, format.mintick) + " / 익절 " + str.tostring(tpPx, format.mintick) + " (" + note + ")"
+        alert(entMsg, alert.freq_once_per_bar_close)
         setDir := 0
 
 // ── 그리기 ──────────────────────────────────────────────────────────────────
@@ -268,30 +253,34 @@ plot(setDir != 0 ? setStop : na, "셋업 손절 기준 (1H 꼬리)", color.new(c
 plot(strategy.position_size != 0 ? posStop : na, "손절", color.red, 2, plot.style_linebr)
 plot(strategy.position_size != 0 ? posTp : na, "익절", color.green, 2, plot.style_linebr)
 
-plotshape(sigLong and setDir == 1, "1H 롱 스윙 실패", shape.triangleup, location.belowbar,
-     color.teal, text = "1H SFP", textcolor = color.teal, size = size.small)
-plotshape(sigShort and setDir == -1, "1H 숏 스윙 실패", shape.triangledown, location.abovebar,
-     color.red, text = "1H SFP", textcolor = color.red, size = size.small)
-plotshape(ltfFail and not ltfBroke and setDir != 0 and inSess, "5분봉 재확인 (손익비 부족)",
-     shape.xcross, location.belowbar, color.new(color.gray, 30), size = size.tiny)
+plotshape(sigLong and setDir == 1, "1H 롱 스윙 실패", shape.triangleup, location.belowbar, color.teal, text = "1H SFP", textcolor = color.teal, size = size.small)
+plotshape(sigShort and setDir == -1, "1H 숏 스윙 실패", shape.triangledown, location.abovebar, color.red, text = "1H SFP", textcolor = color.red, size = size.small)
+plotshape(ltfFail and not ltfBroke and setDir != 0 and inSess, "5분봉 재확인 (손익비 부족)", shape.xcross, location.belowbar, color.new(color.gray, 30), size = size.tiny)
 
 bgcolor(useSess and not inSess ? color.new(color.gray, 92) : na, title = "진입 금지 시간")
 
 // ── 상태판 ──────────────────────────────────────────────────────────────────
-var table info = table.new(position.top_right, 2, 4, bgcolor = color.new(color.black, 20),
-     border_width = 1, border_color = color.new(color.gray, 60))
+var table info = table.new(position.top_right, 2, 4, bgcolor = color.new(color.black, 20), border_width = 1, border_color = color.new(color.gray, 60))
 if barstate.islast
-    string st = not tfOk ? "차트 시간대를 " + htf + " 이하로" :
-         strategy.position_size > 0 ? "롱 보유" : strategy.position_size < 0 ? "숏 보유" :
-         setDir == 1 ? "롱 대기 (5분봉 눌림 기다림)" : setDir == -1 ? "숏 대기 (5분봉 반등 기다림)" :
-         "신호 없음 — 쉬는 날"
+    string st = "신호 없음 - 쉬는 날"
+    if setDir == 1
+        st := "롱 대기 (5분봉 눌림 기다림)"
+    if setDir == -1
+        st := "숏 대기 (5분봉 반등 기다림)"
+    if strategy.position_size > 0
+        st := "롱 보유"
+    if strategy.position_size < 0
+        st := "숏 보유"
+    if not tfOk
+        st := "차트 시간대를 " + htf + " 이하로"
     table.cell(info, 0, 0, "상태", text_color = color.silver, text_size = size.small)
     table.cell(info, 1, 0, st, text_color = color.white, text_size = size.small)
     table.cell(info, 0, 1, "큰 추세", text_color = color.silver, text_size = size.small)
-    table.cell(info, 1, 1, bigTrend == 1 ? "상승" : bigTrend == -1 ? "하락" : "-",
-         text_color = bigTrend == 1 ? color.lime : bigTrend == -1 ? color.red : color.white, text_size = size.small)
+    string trTxt = bigTrend == 1 ? "상승" : bigTrend == -1 ? "하락" : "-"
+    color  trCol = bigTrend == 1 ? color.lime : bigTrend == -1 ? color.red : color.white
+    table.cell(info, 1, 1, trTxt, text_color = trCol, text_size = size.small)
     table.cell(info, 0, 2, "진입 시간", text_color = color.silver, text_size = size.small)
     table.cell(info, 1, 2, inSess ? "열림" : "닫힘 (기다림)", text_color = color.white, text_size = size.small)
     table.cell(info, 0, 3, "손절 기준", text_color = color.silver, text_size = size.small)
-    table.cell(info, 1, 3, setDir != 0 ? str.tostring(setStop, format.mintick) : "-",
-         text_color = color.white, text_size = size.small)
+    string stopTxt = setDir != 0 ? str.tostring(setStop, format.mintick) : "-"
+    table.cell(info, 1, 3, stopTxt, text_color = color.white, text_size = size.small)
