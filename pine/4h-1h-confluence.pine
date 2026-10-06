@@ -1,0 +1,658 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────
+// 4H × 1H 겹침 진입 알림 (알림 전용 · 자동매매 아님)
+// 4시간봉 캔들전략(v2)에 1시간봉 스윙 실패(SFP) 전략을 겹친 것.
+// 두 전략이 같은 방향을 가리킬 때만 진입한다.
+//   ▸ 4H 캔들 신호 → 5분봉 몸통 돌파 → 되돌림 체결  (4시간봉 전략 그대로)
+//   ▸ + 4H 신호봉 시작 이후 같은 방향 1시간봉 스윙 실패가 나와 있어야 체결
+//   ▸ + (선택) 런던·뉴욕 거래량 시간대에만 체결   (1시간봉 전략 규칙)
+//   ▸ 손절은 4H 기준 그대로, 또는 1시간봉 꼬리 밑(더 타이트)을 고를 수 있음
+// ── 아래는 원래 4시간봉 전략 설명 ──
+// 1) 4H 신호: 직전봉 저가(고가) 스윕 → 반대편 돌파 → 범위 50% 위(아래) 마감
+// 2) 필터: 저점/고점 밀집 스윕 여부, 아래(위)에 더 털릴 자리 → 손절 조정
+// 3) 5분봉: 신호 이후 생긴 스윙 고점(저점)을 '몸통 마감'으로 돌파
+//    → 다음 봉부터 돌파선까지 되돌림이 오면 지정가 체결로 진입
+// 4) 손절·1차 익절·최종 익절 박스 표시, 도달 시 알림
+// 5) 보유 중에도 새 신호 추적 → 여러 포지션 동시 관리
+//    차트 박스·상태 표는 '가장 최근에 진입한 포지션' 하나만 표시
+// 사용법: 5분봉 차트에 추가 → 알림 조건 "★ 전체 알림" 또는 "모든 alert() 함수 호출"
+// ─────────────────────────────────────────────────────────────
+indicator("4H×1H 겹침 진입 알림", shorttitle = "4H×1H 겹침", overlay = true, max_labels_count = 300, max_lines_count = 300, max_boxes_count = 200)
+
+// ───────── 입력 ─────────
+G1 = "① 4시간봉 신호"
+htf        = input.timeframe("240", "신호 타임프레임", group = G1, display = display.none)
+lookback   = input.int(30, "유동성 탐색 범위 (과거 봉 수)", minval = 5, maxval = 200, group = G1, display = display.none)
+clusterTol = input.float(0.15, "저점/고점 밀집 허용 오차 (%)", minval = 0, step = 0.05, group = G1, display = display.none)
+deepAtr    = input.float(1.0, "'더 털릴 자리' 탐색 거리 (ATR 배수)", minval = 0, step = 0.1, group = G1, display = display.none)
+
+G2 = "② 5분봉 진입"
+pivLen     = input.int(3, "스윙 고점/저점 인식 (좌우 봉 수)", minval = 1, maxval = 10, group = G2, display = display.none)
+retestAtr  = input.float(0.1, "되돌림 지정가 여유폭 (5분봉 ATR 배수, 0 = 돌파선 정확히)", minval = 0, step = 0.05, group = G2, display = display.none)
+waitHrs    = input.float(24, "신호 유효 시간 (시간)", minval = 1, step = 1, group = G2, display = display.none)
+missHrs    = input.float(4, "돌파 후 되돌림 대기 (시간)", minval = 0.25, step = 0.25, group = G2, display = display.none)
+// 차트 봉 크기와 상관없이 같은 시간으로 동작 (5분봉·1시간봉 모두)
+waitBars   = math.max(1, math.round(waitHrs * 3600 / timeframe.in_seconds()))
+missBars   = math.max(1, math.round(missHrs * 3600 / timeframe.in_seconds()))
+
+G3 = "③ 손절·익절"
+minRR      = input.float(1.5, "최소 손익비", minval = 0.1, step = 0.1, group = G3, display = display.none)
+stopBufAtr = input.float(0.1, "손절 여유폭 (4시간봉 ATR 배수)", minval = 0, step = 0.05, group = G3, display = display.none)
+manualTgt  = input.float(0.0, "수동 최종 익절가 (0 = 자동: 탐색 범위 최고/최저가)", minval = 0, group = G3, display = display.none)
+tp1R       = input.float(1.0, "1차 익절 (손절폭의 몇 배, 0 = 사용 안 함)", minval = 0, step = 0.1, group = G3, display = display.none)
+beAfterTp1 = input.bool(false, "1차 익절 후 손절을 진입가로 이동", group = G3, display = display.none)
+maxOpen    = input.int(0, "최대 동시 보유 포지션 수 (0 = 제한 없음)", minval = 0, maxval = 50, group = G3, display = display.none)
+flipExit   = input.bool(true, "진입 후 5분봉 구조가 반대로 바뀌면 정리 (차트·표에서 지움)", group = G3, display = display.none)
+tp1Pct     = input.float(50, "1차 익절 청산 비율 (%, 성과 계산용)", minval = 0, maxval = 100, step = 10, group = G3, display = display.none)
+
+G4 = "④ 표시"
+showLines  = input.bool(true, "손절·익절 박스와 대기선 표시", group = G4, display = display.none)
+onlyLatest = input.bool(true, "차트에 최신 포지션 박스만 표시", group = G4, display = display.none)
+boxBars    = input.int(60, "포지션 박스 기본 길이 (봉 수)", minval = 5, maxval = 400, group = G4, display = display.none)
+showStats  = input.bool(true, "성과 표 (오른쪽 아래) 표시", group = G4, display = display.none)
+tblSize    = input.string("크게", "상태·성과 표 글자 크기", options = ["작게", "보통", "크게", "아주 크게"], group = G4, display = display.none)
+G5 = "⑤ 1시간봉 스윙 실패 (겹침 조건)"
+const string STOP_4H = "4시간봉 기준 (기존)"
+const string STOP_1H = "1시간봉 꼬리 밑 (타이트)"
+useSfp      = input.bool(true, "같은 방향 1시간봉 스윙 실패가 있어야 진입", group = G5, display = display.none)
+sfpLife     = input.int(48, "1시간봉 스윙 유효 기간 (1시간봉 수)", minval = 6, maxval = 200, group = G5, display = display.none)
+sfpStrength = input.float(0.0, "스윙 실패 마감 강도 최소 (%)", minval = 0, maxval = 100, step = 5, group = G5, display = display.none, tooltip = "(종가 - 스윙선) ÷ 봉 길이. 0이면 선 안쪽 마감이면 통과")
+sfpPreHrs   = input.float(0, "4H 신호봉보다 이만큼 먼저 나온 스윙 실패도 인정 (시간)", minval = 0, step = 1, group = G5, display = display.none)
+stopSrc     = input.string(STOP_4H, "손절 기준", options = [STOP_4H, STOP_1H], group = G5, display = display.none, tooltip = "1시간봉 꼬리 밑: 4H 손절보다 안쪽일 때만 적용 → 손익비가 좋아짐")
+useSess     = input.bool(true, "거래량 시간대에만 체결 (런던·뉴욕)", group = G5, display = display.none)
+sess        = input.session("0800-2100", "체결 허용 시간", group = G5, display = display.none)
+tz          = input.string("Europe/London", "시간대 기준", options = ["Europe/London", "Asia/Seoul", "America/New_York", "UTC"], group = G5, display = display.none)
+showSfp     = input.bool(true, "1시간봉 스윙 실패 표시", group = G5, display = display.none)
+preMs       = int(math.round(sfpPreHrs * 3600000))
+
+txtSz  = tblSize == "작게" ? size.small : tblSize == "보통" ? size.normal : tblSize == "크게" ? size.large : size.huge
+txtSzS = tblSize == "작게" ? size.tiny  : tblSize == "보통" ? size.small  : tblSize == "크게" ? size.normal : size.large
+
+// 4시간봉 차트에서는 신호 캔들만 가볍게 표시, 5분봉 등 하위 차트에서는 전체 로직 실행
+isHtfChart = timeframe.in_seconds() == timeframe.in_seconds(htf)
+if timeframe.in_seconds() > timeframe.in_seconds(htf)
+    runtime.error("차트를 4시간봉 또는 5분봉처럼 신호 타임프레임 이하로 바꿔주세요.")
+
+// ───────── 4시간봉 계산 (확정된 직전 봉만 사용 → 리페인트 없음) ─────────
+f_htf() =>
+    atrH = ta.atr(14)
+    mid  = (high + low) / 2
+    bull = low < low[1] and high > high[1] and close > mid
+    bear = high > high[1] and low < low[1] and close < mid
+    tolL = low[1] * clusterTol / 100
+    tolH = high[1] * clusterTol / 100
+    int   cntL  = 0
+    int   cntH  = 0
+    float deepL = na
+    float deepH = na
+    float hiMax = na
+    float loMin = na
+    for i = 2 to lookback
+        l = low[i]
+        h = high[i]
+        if not na(l)
+            if l >= low and l <= low[1] + tolL
+                cntL += 1
+            if l < low and low - l <= atrH * deepAtr
+                deepL := na(deepL) ? l : math.max(deepL, l)
+            loMin := na(loMin) ? l : math.min(loMin, l)
+        if not na(h)
+            if h <= high and h >= high[1] - tolH
+                cntH += 1
+            if h > high and h - high <= atrH * deepAtr
+                deepH := na(deepH) ? h : math.min(deepH, h)
+            hiMax := na(hiMax) ? h : math.max(hiMax, h)
+    [bull[1], bear[1], high[1], low[1], atrH[1], cntL[1], cntH[1], deepL[1], deepH[1], hiMax[1], loMin[1], time[1]]
+
+[hBull, hBear, hHigh, hLow, hAtr, hCntL, hCntH, hDeepL, hDeepH, hHiMax, hLoMin, hTime] = request.security(syminfo.tickerid, htf, f_htf(), lookahead = barmerge.lookahead_on)
+newHtf = not na(hTime) and hTime != nz(hTime[1])
+
+// ───────── 1시간봉 스윙 실패 계산 (확정된 직전 1시간봉만 사용) ─────────
+// 세 봉 중 가운데 저점이 앞뒤보다 낮으면 스윙 저점(고점은 반대), 세 번째 봉 마감 후 확정.
+// 그 선을 꼬리로 뚫고 안에서 마감 → 스윙 실패. 밖에서 마감 → 돌파(신호 아님).
+f_sfp() =>
+    var lowLv   = array.new<float>()
+    var lowBar  = array.new<int>()
+    var highLv  = array.new<float>()
+    var highBar = array.new<int>()
+    bool  bull      = false
+    bool  brokeLow  = false
+    float bullLevel = na
+    bool  bear      = false
+    bool  brokeHigh = false
+    float bearLevel = na
+    if lowLv.size() > 0
+        for i = lowLv.size() - 1 to 0
+            float lv = lowLv.get(i)
+            if bar_index - lowBar.get(i) > sfpLife
+                lowLv.remove(i)
+                lowBar.remove(i)
+            else if low < lv
+                if close > lv
+                    bull      := true
+                    bullLevel := na(bullLevel) ? lv : math.max(bullLevel, lv)
+                else
+                    brokeLow := true
+                lowLv.remove(i)
+                lowBar.remove(i)
+    if highLv.size() > 0
+        for i = highLv.size() - 1 to 0
+            float lv = highLv.get(i)
+            if bar_index - highBar.get(i) > sfpLife
+                highLv.remove(i)
+                highBar.remove(i)
+            else if high > lv
+                if close < lv
+                    bear      := true
+                    bearLevel := na(bearLevel) ? lv : math.min(bearLevel, lv)
+                else
+                    brokeHigh := true
+                highLv.remove(i)
+                highBar.remove(i)
+    float rng = high - low
+    if bull and rng > 0 and (close - bullLevel) / rng * 100 < sfpStrength
+        bull := false
+    if bear and rng > 0 and (bearLevel - close) / rng * 100 < sfpStrength
+        bear := false
+    if brokeLow or brokeHigh or (bull and bear)
+        bull := false
+        bear := false
+    if low[1] < low[2] and low[1] < low
+        lowLv.push(low[1])
+        lowBar.push(bar_index - 1)
+    if high[1] > high[2] and high[1] > high
+        highLv.push(high[1])
+        highBar.push(bar_index - 1)
+    [bull[1], low[1], bullLevel[1], bear[1], high[1], bearLevel[1], time[1]]
+
+sfpTf = timeframe.in_seconds() <= 3600 ? "60" : timeframe.period
+[qBull, qBullWick, qBullLvl, qBear, qBearWick, qBearLvl, qTime] = request.security(syminfo.tickerid, sfpTf, f_sfp(), lookahead = barmerge.lookahead_on)
+newSfp = not na(qTime) and qTime != nz(qTime[1])
+
+// ───────── 도우미 ─────────
+f_p(float x) => na(x) ? "-" : str.tostring(x, format.mintick)
+
+f_rr(float e, float s, float t, bool isLong) =>
+    float r = na
+    if not na(e) and not na(s) and not na(t)
+        float risk = isLong ? e - s : s - e
+        float rew  = isLong ? t - e : e - t
+        if risk > 0 and rew > 0
+            r := rew / risk
+    r
+
+f_rrTxt(float r) => na(r) ? "계산 불가" : "1 : " + str.tostring(r, "#.##")
+
+f_endLine(line l) =>
+    if not na(l)
+        line.set_x2(l, bar_index)
+        line.set_extend(l, extend.none)
+
+// ───────── 상태 ─────────
+// 셋업: 0 없음 / ±1 진입 대기(4H 신호 후) / ±2 되돌림 대기(5분봉 돌파 후)   (+ 매수, - 매도)
+var int    state  = 0
+var float  stopPx = na
+var float  tgtPx  = na
+var float  lvl    = na
+var float  limPx  = na
+var float  lastPH = na
+var float  lastPL = na
+var int    sBar   = na
+var int    tBar   = na
+var string fTxt   = ""
+var line   lnStop = na
+var line   lnTgt  = na
+var line   lnLim  = na
+var int    sigT   = na      // 4H 신호봉 시작 시각 (1H 스윙 실패 인정 기준)
+
+// 가장 최근 1시간봉 스윙 실패 (롱 / 숏)
+var int    sfpLT  = na
+var float  sfpLW  = na
+var float  sfpLL  = na
+var int    sfpST  = na
+var float  sfpSW  = na
+var float  sfpSL  = na
+
+// 보유 포지션 목록 (id = 진입 봉 번호)
+var array<int>   pId   = array.new<int>()
+var array<int>   pDir  = array.new<int>()
+var array<float> pEnt  = array.new<float>()
+var array<float> pSl   = array.new<float>()
+var array<float> pTp1  = array.new<float>()
+var array<float> pTp2  = array.new<float>()
+var array<float> pRR   = array.new<float>()
+var array<bool>  pTp1H = array.new<bool>()
+var array<float> pRef  = array.new<float>()   // 구조 기준선 (SELL: 직전 스윙 고점 / BUY: 직전 스윙 저점)
+var array<float> pRisk = array.new<float>()   // 처음 손절폭 (성과 계산용)
+var float extSince = na                        // 돌파 이후 최고가(SELL)/최저가(BUY)
+
+// 화면 표시용: 가장 최근에 진입한 포지션 1개
+var int    dId    = na
+var int    dDir   = 0
+var float  dEnt   = na
+var float  dSl    = na
+var float  dTp1   = na
+var float  dTp2   = na
+var float  dRR    = na
+var bool   dTp1H  = false
+var string dFlt   = ""
+var string dRes   = ""      // "" = 보유 중, 아니면 종료 사유
+var box    dBxTp  = na
+var box    dBxSl  = na
+var line   dLnTp1 = na
+var array<box>   gBx = array.new<box>()     // 지울 대상(최신만 표시 모드)
+var array<line>  gLn = array.new<line>()
+var array<label> gLb = array.new<label>()
+
+// 성과 집계 (차트에 불러온 기간 기준)
+var int   nWin    = 0
+var int   nLoss   = 0
+var int   nEven   = 0
+var float sumWinR = 0.0
+var float sumLosR = 0.0
+var float sumR    = 0.0
+
+atrL = ta.atr(14)
+ph   = ta.pivothigh(high, pivLen, pivLen)
+pl   = ta.pivotlow(low, pivLen, pivLen)
+tk   = syminfo.ticker
+
+// 알림 조건용 이벤트 (매 봉 초기화)
+bool  evSigL = false
+bool  evSigS = false
+bool  evBrk  = false
+bool  evEnt  = false
+bool  evPass = false
+bool  evTp   = false
+bool  evSl   = false
+bool  evCan  = false
+bool  evFlip = false
+float evPx   = na
+float evEntP = na
+float evTp1P = na
+
+// 새 1시간봉 스윙 실패 기록
+if newSfp and not isHtfChart
+    if qBull
+        sfpLT := qTime
+        sfpLW := qBullWick
+        sfpLL := qBullLvl
+        if showSfp
+            label.new(bar_index, qBullWick, "1H", style = label.style_label_up, color = color.new(color.aqua, 40), textcolor = color.white, size = size.tiny, tooltip = "1시간봉 롱 스윙 실패\n스윙선 " + f_p(qBullLvl) + " 털고 위에서 마감\n꼬리 " + f_p(qBullWick))
+    if qBear
+        sfpST := qTime
+        sfpSW := qBearWick
+        sfpSL := qBearLvl
+        if showSfp
+            label.new(bar_index, qBearWick, "1H", style = label.style_label_down, color = color.new(color.fuchsia, 40), textcolor = color.white, size = size.tiny, tooltip = "1시간봉 숏 스윙 실패\n스윙선 " + f_p(qBearLvl) + " 털고 아래에서 마감\n꼬리 " + f_p(qBearWick))
+
+// 지금 셋업 방향으로 겹침이 성립했나 (4H 신호봉 시작 이후 같은 방향 1H 스윙 실패)
+f_sfpOk(bool isL) =>
+    int t = isL ? sfpLT : sfpST
+    not useSfp or (not na(t) and not na(sigT) and t >= sigT - preMs)
+
+inSess = not useSess or not na(time(timeframe.period, sess, tz))
+
+// ═════════ ③ 보유 포지션 감시 (진입한 다음 봉부터) ═════════
+// 같은 봉에서 손절·익절이 동시에 닿으면 손절로 처리 (보수적)
+if array.size(pId) > 0
+    for i = array.size(pId) - 1 to 0
+        pid  = array.get(pId, i)
+        L    = array.get(pDir, i) > 0
+        ent  = array.get(pEnt, i)
+        sl   = array.get(pSl, i)
+        tp1  = array.get(pTp1, i)
+        tp2  = array.get(pTp2, i)
+        t1h  = array.get(pTp1H, i)
+        shown = not na(dId) and pid == dId
+        dTxt = L ? "BUY " : "SELL "
+        tag  = "\n(" + dTxt + f_p(ent) + " 포지션)"
+        bool  closed = false
+        float cR     = na
+        string res   = ""
+        if L ? low <= sl : high >= sl
+            isBe = t1h and beAfterTp1
+            fr   = t1h ? tp1Pct / 100 : 0.0
+            cR     := fr * tp1R + (1 - fr) * (isBe ? 0.0 : -1.0)
+            res    := isBe ? "본절 청산" : "손절"
+            evSl   := true
+            evPx   := sl
+            closed := true
+            if shown or not onlyLatest
+                array.push(gLb, label.new(bar_index, sl, dTxt + res, style = L ? label.style_label_up : label.style_label_down, color = isBe ? color.gray : color.red, textcolor = color.white, size = size.small))
+            alert(tk + " | " + (isBe ? "⚪ 본절 청산 " : "❌ 손절 ") + f_p(sl) + tag, alert.freq_once_per_bar_close)
+        else
+            if not t1h and not na(tp1) and (L ? high >= tp1 : low <= tp1)
+                t1h  := true
+                array.set(pTp1H, i, true)
+                evTp := true
+                evPx := tp1
+                if shown
+                    dTp1H := true
+                if shown or not onlyLatest
+                    array.push(gLb, label.new(bar_index, tp1, dTxt + "1차 익절", style = L ? label.style_label_down : label.style_label_up, color = color.teal, textcolor = color.white, size = size.small))
+                alert(tk + " | 💰 1차 익절 도달 " + f_p(tp1) + (beAfterTp1 ? "\n손절을 진입가 " + f_p(ent) + "로 이동" : "") + tag, alert.freq_once_per_bar_close)
+                if beAfterTp1
+                    array.set(pSl, i, ent)
+                    if shown
+                        dSl := ent
+            if L ? high >= tp2 : low <= tp2
+                fr2 = t1h ? tp1Pct / 100 : 0.0
+                cR     := fr2 * tp1R + (1 - fr2) * array.get(pRR, i)
+                res    := "최종 익절"
+                evTp   := true
+                evPx   := tp2
+                closed := true
+                if shown or not onlyLatest
+                    array.push(gLb, label.new(bar_index, tp2, dTxt + res, style = L ? label.style_label_down : label.style_label_up, color = color.teal, textcolor = color.white, size = size.normal))
+                alert(tk + " | 🎯 최종 익절 도달 " + f_p(tp2) + tag, alert.freq_once_per_bar_close)
+            // 구조 전환: SELL은 기준 고점 위, BUY는 기준 저점 아래에서 몸통 마감 → 진입 근거 소멸
+            ref = array.get(pRef, i)
+            if not closed and flipExit and not na(ref) and (L ? close < ref : close > ref)
+                fr3 = t1h ? tp1Pct / 100 : 0.0
+                rk  = array.get(pRisk, i)
+                rNow = rk > 0 ? (L ? close - ent : ent - close) / rk : 0.0
+                cR     := fr3 * tp1R + (1 - fr3) * rNow
+                res    := "구조 전환"
+                evFlip := true
+                evPx   := close
+                closed := true
+                alert(tk + " | ⚪ 5분봉 구조 전환 → 포지션 정리 " + f_p(close) + " (기준 " + f_p(ref) + " " + (L ? "이탈" : "돌파") + ")" + tag, alert.freq_once_per_bar_close)
+        if closed
+            // 구조 전환으로 정리된 최신 포지션은 차트에서 박스·라벨을 지움
+            if shown and res == "구조 전환"
+                if array.size(gBx) > 0
+                    for k = 0 to array.size(gBx) - 1
+                        box.delete(array.get(gBx, k))
+                if array.size(gLn) > 0
+                    for k = 0 to array.size(gLn) - 1
+                        line.delete(array.get(gLn, k))
+                if array.size(gLb) > 0
+                    for k = 0 to array.size(gLb) - 1
+                        label.delete(array.get(gLb, k))
+                array.clear(gBx)
+                array.clear(gLn)
+                array.clear(gLb)
+                dBxTp  := na
+                dBxSl  := na
+                dLnTp1 := na
+            if shown
+                dRes := res
+                if not na(dBxTp)
+                    box.set_right(dBxTp, bar_index)
+                    box.set_right(dBxSl, bar_index)
+                if not na(dLnTp1)
+                    line.set_x2(dLnTp1, bar_index)
+            sumR += cR
+            if cR > 0.0001
+                nWin    += 1
+                sumWinR += cR
+            else if cR < -0.0001
+                nLoss   += 1
+                sumLosR += -cR
+            else
+                nEven   += 1
+            array.remove(pId, i)
+            array.remove(pDir, i)
+            array.remove(pEnt, i)
+            array.remove(pSl, i)
+            array.remove(pTp1, i)
+            array.remove(pTp2, i)
+            array.remove(pRR, i)
+            array.remove(pTp1H, i)
+            array.remove(pRef, i)
+            array.remove(pRisk, i)
+
+// 보유 중인 최신 포지션 박스를 현재 봉까지 늘림
+if dRes == "" and not na(dBxTp)
+    if bar_index > box.get_right(dBxTp)
+        box.set_right(dBxTp, bar_index)
+        box.set_right(dBxSl, bar_index)
+        if not na(dLnTp1)
+            line.set_x2(dLnTp1, bar_index)
+
+// ═════════ ① 새 4시간봉 신호 (보유 중에도 계속 추적) ═════════
+sigNow = not isHtfChart and newHtf and (hBull or hBear)
+if sigNow
+    isL = hBull
+    evSigL := isL
+    evSigS := not isL
+    if not na(lnStop)
+        line.delete(lnStop)
+    if not na(lnTgt)
+        line.delete(lnTgt)
+    if not na(lnLim)
+        line.delete(lnLim)
+    lnStop := na
+    lnTgt  := na
+    lnLim  := na
+    state  := isL ? 1 : -1
+    sBar   := bar_index
+    sigT   := hTime
+    lvl    := na
+    limPx  := na
+    lastPH := na
+    lastPL := na
+    deep   = isL ? hDeepL : hDeepH
+    base   = isL ? (na(deep) ? hLow : math.min(deep, hLow)) : (na(deep) ? hHigh : math.max(deep, hHigh))
+    stopPx := isL ? base - hAtr * stopBufAtr : base + hAtr * stopBufAtr
+    autoT  = isL ? hHiMax : hLoMin
+    tgtPx  := manualTgt > 0 ? manualTgt : autoT
+    clusterOk = isL ? hCntL >= 1 : hCntH >= 1
+    fTxt := (clusterOk ? "✅ " : "❌ ") + (isL ? "저점 밀집 스윕" : "고점 밀집 스윕") + "\n" + (na(deep) ? "✅ 추가로 털릴 자리 없음" : "⚠️ " + (isL ? "아래" : "위") + " 털릴 자리 " + f_p(deep) + " → 손절 조정")
+    nOpen = array.size(pId)
+    sfpNote = not useSfp ? "" : f_sfpOk(isL) ? "\n✅ 1H 스윙 실패 이미 나옴" : "\n⏳ 1H 스윙 실패 기다림 (나와야 진입)"
+    label.new(bar_index, isL ? low : high, isL ? "BUY 대기" : "SELL 대기", style = isL ? label.style_label_up : label.style_label_down, color = color.new(isL ? color.teal : color.red, 35), textcolor = color.white, size = size.tiny, tooltip = "4시간봉 신호\n손절 " + f_p(stopPx) + " / 목표 " + f_p(tgtPx) + "\n" + fTxt + sfpNote)
+    if showLines
+        lnStop := line.new(bar_index, stopPx, bar_index + 1, stopPx, extend = extend.right, color = color.new(color.red, 40), style = line.style_dotted, width = 1)
+        if not na(tgtPx)
+            lnTgt := line.new(bar_index, tgtPx, bar_index + 1, tgtPx, extend = extend.right, color = color.new(color.green, 40), style = line.style_dotted, width = 1)
+    alert(tk + " | " + (isL ? "🟢 BUY" : "🔴 SELL") + " 진입 대기 (4H 신호 확정)\n손절 " + f_p(stopPx) + " / 목표 " + f_p(tgtPx) + "\n" + fTxt +  sfpNote + (nOpen > 0 ? "\n현재 보유 포지션 " + str.tostring(nOpen) + "개" : "") + "\n→ 5분봉 몸통 돌파를 기다리세요", alert.freq_once_per_bar_close)
+
+// 신호 이후에 확정된 스윙 고점/저점만 기록
+if not na(ph) and not na(sBar) and bar_index - pivLen > sBar
+    lastPH := ph
+if not na(pl) and not na(sBar) and bar_index - pivLen > sBar
+    lastPL := pl
+
+// ═════════ ② 5분봉 진행 (대기 → 몸통 돌파 → 되돌림 체결) ═════════
+f_endSetup() =>
+    f_endLine(lnStop)
+    f_endLine(lnTgt)
+    f_endLine(lnLim)
+
+if state != 0 and not sigNow
+    longSide = state > 0
+    if longSide ? close < stopPx : close > stopPx
+        evCan := true
+        label.new(bar_index, close, "신호 무효", style = label.style_label_left, color = color.gray, textcolor = color.white, size = size.tiny, tooltip = "진입 전에 손절선 밖에서 마감")
+        alert(tk + " | ⚪ 신호 무효: 진입 전 손절선 이탈", alert.freq_once_per_bar_close)
+        f_endSetup()
+        state := 0
+    else if math.abs(state) == 1
+        if bar_index - sBar > waitBars
+            label.new(bar_index, close, "신호 만료", style = label.style_label_left, color = color.gray, textcolor = color.white, size = size.tiny)
+            f_endSetup()
+            state := 0
+        else
+            brk = longSide ? (not na(lastPH) and close > lastPH and close[1] <= lastPH) : (not na(lastPL) and close < lastPL and close[1] >= lastPL)
+            if brk
+                evBrk := true
+                lvl   := longSide ? lastPH : lastPL
+                limPx := longSide ? lvl + atrL * retestAtr : lvl - atrL * retestAtr
+                extSince := longSide ? low : high
+                state := longSide ? 2 : -2
+                tBar  := bar_index
+                rrE   = f_rr(limPx, stopPx, tgtPx, longSide)
+                if showLines
+                    lnLim := line.new(bar_index, limPx, bar_index + 1, limPx, extend = extend.right, color = color.blue, style = line.style_dashed, width = 2)
+                label.new(bar_index, longSide ? high : low, "돌파", style = longSide ? label.style_label_down : label.style_label_up, color = color.new(color.blue, 30), textcolor = color.white, size = size.tiny, tooltip = "5분봉 몸통 돌파 " + f_p(lvl) + "\n되돌림 지정가 " + f_p(limPx) + "\n예상 손익비 " + f_rrTxt(rrE))
+                alert(tk + " | " + (longSide ? "🟢" : "🔴") + " 5분봉 몸통 돌파 → 되돌림 대기\n지정가 " + f_p(limPx) + " / 손절 " + f_p(stopPx) + " / 목표 " + f_p(tgtPx) + "\n예상 손익비 " + f_rrTxt(rrE), alert.freq_once_per_bar_close)
+    else
+        // 되돌림: 돌파 다음 봉부터, 가격이 지정가까지 실제로 닿아야 체결
+        extSince := longSide ? math.min(extSince, low) : math.max(extSince, high)
+        // 거래량 시간대 밖이면 체결하지 않고 기다림 (돌파 후 대기 시간 안에서)
+        filled = bar_index > tBar and inSess and (longSide ? low <= limPx : high >= limPx)
+        if filled
+            entP = longSide ? math.min(open, limPx) : math.max(open, limPx)   // 갭으로 넘어가면 시가 체결
+            sfpOk = f_sfpOk(longSide)
+            // 손절 기준: 1시간봉 꼬리 밑을 고르면, 4H 손절보다 안쪽이고 진입가 반대편일 때만 적용
+            float sfpW = longSide ? sfpLW : sfpSW
+            if stopSrc == STOP_1H and useSfp and sfpOk and not na(sfpW)
+                float s1 = longSide ? sfpW - hAtr * stopBufAtr : sfpW + hAtr * stopBufAtr
+                if longSide ? (s1 < entP and s1 > stopPx) : (s1 > entP and s1 < stopPx)
+                    stopPx := s1
+            rr   = f_rr(entP, stopPx, tgtPx, longSide)
+            rrOk = not na(rr) and rr >= minRR
+            full = maxOpen > 0 and array.size(pId) >= maxOpen
+            ok   = rrOk and not full and sfpOk
+            f_endSetup()
+            if ok
+                evEnt  := true
+                evEntP := entP
+                risk = math.abs(entP - stopPx)
+                float tp1v = tp1R > 0 ? (longSide ? entP + risk * tp1R : entP - risk * tp1R) : na
+                if not na(tp1v) and (longSide ? tp1v >= tgtPx : tp1v <= tgtPx)
+                    tp1v := na
+                evTp1P := tp1v
+                array.push(pId, bar_index)
+                array.push(pDir, longSide ? 1 : -1)
+                array.push(pEnt, entP)
+                array.push(pSl, stopPx)
+                array.push(pTp1, tp1v)
+                array.push(pTp2, tgtPx)
+                array.push(pRR, rr)
+                array.push(pTp1H, false)
+                // 구조 기준선: 진입 시점의 직전 스윙(신호 이후) 과 돌파 이후 극값 중 바깥쪽
+                array.push(pRef, longSide ? (na(lastPL) ? extSince : math.min(lastPL, extSince)) : (na(lastPH) ? extSince : math.max(lastPH, extSince)))
+                array.push(pRisk, risk)
+                // 최신 포지션으로 화면 교체
+                if onlyLatest
+                    if array.size(gBx) > 0
+                        for k = 0 to array.size(gBx) - 1
+                            box.delete(array.get(gBx, k))
+                    if array.size(gLn) > 0
+                        for k = 0 to array.size(gLn) - 1
+                            line.delete(array.get(gLn, k))
+                    if array.size(gLb) > 0
+                        for k = 0 to array.size(gLb) - 1
+                            label.delete(array.get(gLb, k))
+                    array.clear(gBx)
+                    array.clear(gLn)
+                    array.clear(gLb)
+                dId   := bar_index
+                dDir  := longSide ? 1 : -1
+                dEnt  := entP
+                dSl   := stopPx
+                dTp1  := tp1v
+                dTp2  := tgtPx
+                dRR   := rr
+                dTp1H := false
+                dFlt  := fTxt + (useSfp ? "\n✅ 1H 스윙 실패 " + f_p(longSide ? sfpLL : sfpSL) + " 겹침" : "")
+                dRes  := ""
+                dBxTp  := na
+                dBxSl  := na
+                dLnTp1 := na
+                if showLines
+                    dBxTp := box.new(bar_index, longSide ? tgtPx : entP, bar_index + boxBars, longSide ? entP : tgtPx, border_color = color.new(color.teal, 30), bgcolor = color.new(color.teal, 82), text = "최종 익절 " + f_p(tgtPx) + "  (1 : " + str.tostring(rr, "#.##") + ")", text_color = color.teal, text_size = size.small, text_halign = text.align_right, text_valign = longSide ? text.align_top : text.align_bottom)
+                    dBxSl := box.new(bar_index, longSide ? entP : stopPx, bar_index + boxBars, longSide ? stopPx : entP, border_color = color.new(color.red, 30), bgcolor = color.new(color.red, 82), text = "손절 " + f_p(stopPx), text_color = color.red, text_size = size.small, text_halign = text.align_right, text_valign = longSide ? text.align_bottom : text.align_top)
+                    array.push(gBx, dBxTp)
+                    array.push(gBx, dBxSl)
+                    if not na(tp1v)
+                        dLnTp1 := line.new(bar_index, tp1v, bar_index + boxBars, tp1v, color = color.teal, style = line.style_dashed, width = 2)
+                        array.push(gLn, dLnTp1)
+                        array.push(gLb, label.new(bar_index, tp1v, "1차 익절 " + f_p(tp1v), style = label.style_label_right, color = color.new(color.teal, 20), textcolor = color.white, size = size.tiny))
+                // 진입 표시: 체결 가격에 정확히 표시
+                array.push(gLb, label.new(bar_index, entP, (longSide ? "▲ BUY 진입 " : "▼ SELL 진입 ") + f_p(entP) + "\n손익비 " + f_rrTxt(rr), style = longSide ? label.style_label_up : label.style_label_down, color = longSide ? color.teal : color.red, textcolor = color.white, size = size.normal))
+                alert(tk + " | " + (longSide ? "✅ BUY 진입 (되돌림 체결)" : "✅ SELL 진입 (되돌림 체결)") + "\n진입 " + f_p(entP) + " / 손절 " + f_p(stopPx) + "\n1차 익절 " + f_p(tp1v) + " / 최종 익절 " + f_p(tgtPx) + "\n손익비 " + f_rrTxt(rr) + (useSfp ? "\n4H × 1H 스윙 실패 겹침 ✅" : "") + "\n보유 포지션 " + str.tostring(array.size(pId)) + "개", alert.freq_once_per_bar_close)
+            else
+                evPass := true
+                passWhy = not sfpOk ? "1시간봉 스윙 실패 없음 (겹침 아님)" : full ? "보유 한도 " + str.tostring(maxOpen) + "개 초과" : "손익비 " + f_rrTxt(rr) + " (최소 " + str.tostring(minRR) + ")"
+                label.new(bar_index, entP, sfpOk ? "패스" : "패스 · 1H 없음", style = longSide ? label.style_label_up : label.style_label_down, color = color.orange, textcolor = color.white, size = size.small, tooltip = passWhy)
+                alert(tk + " | ⛔ 되돌림 왔지만 패스 (" + passWhy + ")", alert.freq_once_per_bar_close)
+            state := 0
+        else if bar_index - tBar >= missBars
+            evCan := true
+            label.new(bar_index, close, "놓침", style = label.style_label_left, color = color.gray, textcolor = color.white, size = size.tiny, tooltip = "돌파 후 되돌림 없이 진행")
+            alert(tk + " | ⚪ 되돌림 없이 진행 → 이번 거래 패스", alert.freq_once_per_bar_close)
+            f_endSetup()
+            state := 0
+
+// ───────── 상태 표: 가장 최근에 진입한 포지션 1개 ─────────
+var table tb = table.new(position.top_right, 2, 8, bgcolor = color.new(color.black, 15), frame_color = color.gray, frame_width = 1, border_width = 1)
+if barstate.islast and not isHtfChart
+    nP = array.size(pId)
+    string sTxt = "진입 기록 없음"
+    if not na(dId)
+        dirTxt = dDir > 0 ? "🟢 BUY " : "🔴 SELL "
+        sTxt := dirTxt + (dRes == "" ? "보유 중" : "종료 · " + dRes)
+    if nP > 0
+        sTxt += "\n(전체 보유 " + str.tostring(nP) + "개)"
+    has = not na(dId)
+    table.cell(tb, 0, 0, "최신 진입", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 0, sTxt, text_color = color.white, text_size = txtSz)
+    table.cell(tb, 0, 1, "진입가", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 1, has ? f_p(dEnt) : "-", text_color = color.aqua, text_size = txtSz)
+    table.cell(tb, 0, 2, "손절", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 2, has ? f_p(dSl) : "-", text_color = color.red, text_size = txtSz)
+    table.cell(tb, 0, 3, "1차 익절", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 3, has and not na(dTp1) ? f_p(dTp1) + (dTp1H ? " ✅" : "") : "-", text_color = color.teal, text_size = txtSz)
+    table.cell(tb, 0, 4, "최종 익절", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 4, has ? f_p(dTp2) : "-", text_color = color.green, text_size = txtSz)
+    table.cell(tb, 0, 5, "손익비", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 5, has ? f_rrTxt(dRR) : "-", text_color = color.white, text_size = txtSz)
+    table.cell(tb, 0, 6, "필터", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 6, has ? dFlt : "-", text_color = color.white, text_size = txtSzS)
+    string ovTxt = "-"
+    if state != 0
+        ovTxt := (state > 0 ? "BUY 대기 · " : "SELL 대기 · ") + (f_sfpOk(state > 0) ? "✅ 1H 겹침" : "⏳ 1H 스윙 실패 기다림")
+    if useSess and not inSess
+        ovTxt += "\n(지금은 체결 시간 아님)"
+    table.cell(tb, 0, 7, "지금 셋업", text_color = color.silver, text_size = txtSz)
+    table.cell(tb, 1, 7, ovTxt, text_color = color.white, text_size = txtSzS)
+
+// ───────── 4시간봉 차트: 신호 캔들만 가볍게 표시 ─────────
+midC  = (high + low) / 2
+bull4 = isHtfChart and barstate.isconfirmed and low < low[1] and high > high[1] and close > midC
+bear4 = isHtfChart and barstate.isconfirmed and high > high[1] and low < low[1] and close < midC
+plotshape(bull4, "BUY 신호 캔들", shape.triangleup, location.belowbar, color.new(color.teal, 30), size = size.tiny, display = display.pane)
+plotshape(bear4, "SELL 신호 캔들", shape.triangledown, location.abovebar, color.new(color.red, 30), size = size.tiny, display = display.pane)
+bgcolor(bull4 ? color.new(color.teal, 90) : bear4 ? color.new(color.red, 90) : na, title = "신호 캔들 배경")
+
+// ───────── 알림 조건 (알림 창 조건 목록에 표시됨) ─────────
+plot(stopPx, "손절가", display = display.none)
+plot(tgtPx, "목표가", display = display.none)
+plot(na(evEntP) ? limPx : evEntP, "진입가", display = display.none)
+plot(evTp1P, "1차익절가", display = display.none)
+plot(evPx, "체결가", display = display.none)
+anyEv = evSigL or evSigS or evBrk or evEnt or evPass or evTp or evSl or evCan or evFlip
+alertcondition(anyEv, "★ 전체 알림 (하나로 모두 받기)", '{{ticker}} 4H×1H 겹침 — 새 알림, 차트 확인\n진입 {{plot("진입가")}} / 손절 {{plot("손절가")}} / 목표 {{plot("목표가")}}')
+alertcondition(evSigL, "① BUY 진입 대기", '{{ticker}} 🟢 BUY 진입 대기 (4H 신호)\n손절 {{plot("손절가")}} / 목표 {{plot("목표가")}}\n→ 5분봉 몸통 돌파 대기')
+alertcondition(evSigS, "① SELL 진입 대기", '{{ticker}} 🔴 SELL 진입 대기 (4H 신호)\n손절 {{plot("손절가")}} / 목표 {{plot("목표가")}}\n→ 5분봉 몸통 돌파 대기')
+alertcondition(evBrk, "② 5분봉 몸통 돌파", '{{ticker}} 5분봉 몸통 돌파 → 되돌림 대기\n지정가 {{plot("진입가")}} / 손절 {{plot("손절가")}}')
+alertcondition(evEnt, "③ ✅ 진입 (4H×1H 겹침)", '{{ticker}} ✅ 진입 (4H×1H 겹침)\n진입 {{plot("진입가")}} / 손절 {{plot("손절가")}}\n1차 익절 {{plot("1차익절가")}} / 최종 {{plot("목표가")}}')
+alertcondition(evPass, "③ ⛔ 패스", '{{ticker}} ⛔ 되돌림 왔지만 패스 (1H 겹침 없음 · 손익비 미달 · 보유 한도)')
+alertcondition(evTp, "④ 💰 익절 도달", '{{ticker}} 💰 익절 도달 {{plot("체결가")}}')
+alertcondition(evSl, "④ ❌ 손절", '{{ticker}} ❌ 손절(또는 본절) {{plot("체결가")}}')
+alertcondition(evFlip, "④ ⚪ 구조 전환 정리", '{{ticker}} ⚪ 진입 후 5분봉 구조가 반대로 바뀜 → 포지션 정리 {{plot("체결가")}}')
+alertcondition(evCan, "⑤ 신호 무효·놓침", '{{ticker}} ⚪ 신호 무효 또는 되돌림 없음 → 이번 거래 패스')
+
+// ───────── 성과 표 (오른쪽 아래) ─────────
+var table stt = table.new(position.bottom_right, 2, 5, bgcolor = color.new(color.black, 15), frame_color = color.gray, frame_width = 1, border_width = 1)
+if barstate.islast and not isHtfChart and showStats
+    nAll = nWin + nLoss + nEven
+    wr   = nAll > 0 ? float(nWin) / nAll * 100 : na
+    avgW = nWin > 0 ? sumWinR / nWin : na
+    avgL = nLoss > 0 ? sumLosR / nLoss : na
+    pr   = not na(avgW) and not na(avgL) and avgL > 0 ? avgW / avgL : na
+    expR = nAll > 0 ? sumR / nAll : na
+    table.cell(stt, 0, 0, "거래 수", text_color = color.silver, text_size = txtSz)
+    table.cell(stt, 1, 0, str.tostring(nAll) + "  (승 " + str.tostring(nWin) + " / 패 " + str.tostring(nLoss) + " / 본절 " + str.tostring(nEven) + ")", text_color = color.white, text_size = txtSz)
+    table.cell(stt, 0, 1, "승률", text_color = color.silver, text_size = txtSz)
+    table.cell(stt, 1, 1, na(wr) ? "-" : str.tostring(wr, "#.#") + "%", text_color = na(wr) ? color.white : wr >= 40 ? color.teal : color.orange, text_size = txtSz)
+    table.cell(stt, 0, 2, "평균 손익비", text_color = color.silver, text_size = txtSz)
+    table.cell(stt, 1, 2, na(pr) ? (na(avgW) ? "-" : "손실 없음") : "1 : " + str.tostring(pr, "#.##"), text_color = color.white, text_size = txtSz)
+    table.cell(stt, 0, 3, "누적 수익", text_color = color.silver, text_size = txtSz)
+    table.cell(stt, 1, 3, (sumR >= 0 ? "+" : "") + str.tostring(sumR, "#.##") + "R", text_color = sumR >= 0 ? color.teal : color.red, text_size = txtSz)
+    table.cell(stt, 0, 4, "거래당 기대값", text_color = color.silver, text_size = txtSz)
+    table.cell(stt, 1, 4, na(expR) ? "-" : (expR >= 0 ? "+" : "") + str.tostring(expR, "#.##") + "R", text_color = na(expR) ? color.white : expR >= 0 ? color.teal : color.red, text_size = txtSz)
