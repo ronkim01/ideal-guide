@@ -1,0 +1,487 @@
+//@version=6
+// ──────────────────────────────────────────────────────────────────────────────
+// 스윕 → 구조 전환 마감 (Sweep → CHoCH Close)
+//
+//   스윕은 '자리', 구조 전환 마감이 '신호'.
+//   1) 전일·주간 고/저(A급) 또는 세션 안 스윙(B급)을 꼬리로 뚫고 안으로 복귀  → 스윕
+//   2) 스윕 직전 '작은 고점'을 종가로 넘김                                   → MSS (작은 전환, 아직 아님)
+//   3) 하락을 만든 '큰 고점'을 종가로 넘김                                   → CHoCH (큰 전환) = 진입
+//   손절: 스윕 꼬리 밖 / 익절: 손절 거리 1.5~2배 또는 반대편 전일 고/저 중 가까운 쪽
+//   막는 것: 1H 고점이 계속 낮아지는 중(역추세) · B급 자리 · 뉴욕 개장 직전 · 손익비 미달
+//
+//   권장: 골드(XAUUSD) 15분봉. 통계 재현은 1시간봉 + 주간 레벨만 켜고 확인.
+// ──────────────────────────────────────────────────────────────────────────────
+indicator("스윕 → 구조전환 마감", shorttitle = "Sweep→CHoCH", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ───── ① 유동성 자리 ─────
+grpLv  = "① 유동성 자리 (스윕 대상)"
+useD   = input.bool(true, "전일 고/저 (A급)", group = grpLv)
+useW   = input.bool(true, "주간 고/저 (A급)", group = grpLv)
+wMode  = input.string("전주", "주간 기준", options = ["전주", "최근 7일"], group = grpLv)
+useB   = input.bool(true, "세션 안 스윙 고/저 (B급)", group = grpLv)
+bLen   = input.int(6, "B급 스윙 길이 (좌우 봉 수)", minval = 2, group = grpLv)
+
+// ───── ② 스윕 판정 ─────
+grpSw       = "② 스윕 판정"
+reclaimBars = input.int(2, "레벨 밖 마감 허용 봉 수 (0 = 같은 봉에 복귀해야 스윕)", minval = 0, group = grpSw)
+maxDepthAtr = input.float(2.0, "최대 침투 깊이 (ATR 배수, 넘으면 돌파)", minval = 0.1, step = 0.1, group = grpSw)
+maxWait     = input.int(24, "스윕 후 신호 대기 최대 봉 수", minval = 1, group = grpSw)
+invTF       = input.timeframe("60", "돌파 판정 TF (이 봉이 레벨 밖에서 마감하면 무효)", group = grpSw)
+
+// ───── ③ 구조 전환 ─────
+grpSt    = "③ 구조 전환"
+minorLen = input.int(2, "작은 고/저점 스윙 길이 (MSS)", minval = 1, group = grpSt)
+majorLen = input.int(6, "큰 고/저점 스윙 길이 (CHoCH)", minval = 2, group = grpSt)
+
+// ───── ④ 필터 ─────
+grpF       = "④ 필터"
+biasTF     = input.timeframe("60", "큰 봉 방향 TF", group = grpF)
+biasCount  = input.int(3, "연속으로 낮아지는(높아지는) 고점(저점) 개수", minval = 2, maxval = 4, group = grpF)
+blockCT    = input.bool(true, "역추세 신호 막기", group = grpF)
+blockB     = input.bool(true, "B급 자리 신호 막기", group = grpF)
+asiaSess   = input.session("0700-1600", "아시아 세션 (경고만)", group = grpF)
+asiaTZ     = input.string("Asia/Seoul", "아시아 세션 시간대", group = grpF)
+preNYSess  = input.session("0900-0945", "개장전 흔들림 구간 (뉴욕 시간, 봉 시작 기준)", group = grpF)
+blockPreNY = input.bool(true, "개장전 흔들림 구간 신호 막기", group = grpF)
+
+// ───── ⑤ 손절 / 익절 ─────
+grpR     = "⑤ 손절 / 익절"
+slBuf    = input.float(1.0, "손절 여유 (꼬리 밖으로, 가격)", minval = 0, step = 0.1, group = grpR)
+tpR      = input.float(2.0, "익절 최대 R (손절 거리 배수)", minval = 0.5, step = 0.1, group = grpR)
+useLiqTP = input.bool(true, "반대편 전일 고/저가 더 가까우면 거기서 익절", group = grpR)
+minRR    = input.float(1.5, "최소 손익비 (미만이면 패스)", minval = 0.1, step = 0.1, group = grpR)
+fullRR   = input.float(2.0, "정상 사이즈 손익비 (미만이면 '사이즈 줄이기')", minval = 0.1, step = 0.1, group = grpR)
+
+// ───── ⑥ 표시 / 통계 ─────
+grpS      = "⑥ 표시 / 통계"
+showLv    = input.bool(true, "레벨 선 보기", group = grpS)
+showMSS   = input.bool(true, "작은 전환(MSS) 표시", group = grpS)
+showPass  = input.bool(true, "막힌 신호도 회색으로 표시", group = grpS)
+showPanel = input.bool(true, "현재 상태 표", group = grpS)
+showStats = input.bool(true, "통계 표", group = grpS)
+statDays  = input.int(90, "통계 기간 (일)", minval = 1, group = grpS)
+
+// ───── 타입 ─────
+type Setup
+    int    dir                 // 1 = 저점 스윕(롱), -1 = 고점 스윕(숏)
+    int    state     = 0       // 0 대기, 1 스윕 진행 중
+    float  level
+    string name
+    bool   gradeA
+    float  ext                 // 스윕 꼬리 극값 (손절 기준)
+    int    extBar
+    int    startBar
+    int    outCnt    = 0       // 레벨 밖 연속 마감 수
+    bool   reclaimed = false
+    bool   mssDone   = false
+    int    id        = -1
+    float  liveMinor
+    float  liveBig
+    line   liveLn
+
+type Trade
+    int   dir
+    int   kind                 // 0 = 스윕 복귀 봉 즉시 진입, 1 = CHoCH 전부, 2 = 필터 통과 신호
+    float entry
+    float stop
+    float tgt
+    int   bar
+    int   id
+
+// ───── 기록 ─────
+var Setup L = Setup.new(1)
+var Setup S = Setup.new(-1)
+var recRange = array.new<bool>()
+var recChoch = array.new<bool>()
+var recImm   = array.new<int>()     // 1 익절, -1 손절, 0 진행 중
+var recRaw   = array.new<int>()
+var recSig   = array.new<int>()
+var recTaken = array.new<bool>()
+var trades   = array.new<Trade>()
+
+// ───── 함수 ─────
+pushPiv(array<float> vs, array<int> bs, float v, int b) =>
+    if not na(v)
+        vs.push(v)
+        bs.push(b)
+        if vs.size() > 60
+            vs.shift()
+            bs.shift()
+
+// 기준 봉보다 앞에 찍힌 가장 최근 피벗
+pivBefore(array<float> vs, array<int> bs, int before) =>
+    float r  = na
+    int   rb = na
+    int   n  = vs.size()
+    if n > 0
+        for i = n - 1 to 0
+            if bs.get(i) < before
+                r  := vs.get(i)
+                rb := bs.get(i)
+                break
+    [r, rb]
+
+// 꼬리로 레벨을 넘었고, 직전 봉은 레벨 안쪽에서 마감
+pierced(int d, float lv, float ext) =>
+    not na(lv) and d * (lv - ext) > 0 and d * (close[1] - lv) > 0
+
+calcTarget(int d, float entry, float stop, float opp) =>
+    risk = d * (entry - stop)
+    float tgt = entry + d * tpR * risk
+    if useLiqTP and not na(opp) and d * (opp - entry) > 0 and d * (tgt - opp) > 0
+        tgt := opp
+    rr = risk > 0 ? d * (tgt - entry) / risk : 0.0
+    [tgt, rr]
+
+fmt(float v) =>
+    str.tostring(v, format.mintick)
+
+// 한 방향 상태 머신 (봉 마감마다 1회)
+step(Setup s, float lvD, float lvW, float lvB, array<float> mnV, array<int> mnB, array<float> mjV, array<int> mjB, float oppLiq, bool ctBias, bool invNew, float invClose, bool inAsia, bool inPreNY, float atr, bool inRange, string wName) =>
+    d    = s.dir
+    ext  = d == 1 ? low : high
+    side = d == 1 ? "저점" : "고점"
+    // 레벨 선택: 주간 > 전일 > 스윙
+    float  lv = na
+    string nm = na
+    bool   ga = false
+    if useW and pierced(d, lvW, ext)
+        lv := lvW
+        nm := wName + " " + side
+        ga := true
+    else if useD and pierced(d, lvD, ext)
+        lv := lvD
+        nm := "전일 " + side
+        ga := true
+    else if useB and pierced(d, lvB, ext)
+        lv := lvB
+        nm := "스윙 " + side
+        ga := false
+
+    // 1) 새 스윕 시작
+    if s.state == 0 and not na(lv)
+        s.state     := 1
+        s.level     := lv
+        s.name      := nm
+        s.gradeA    := ga
+        s.ext       := ext
+        s.extBar    := bar_index
+        s.startBar  := bar_index
+        s.outCnt    := 0
+        s.reclaimed := false
+        s.mssDone   := false
+        s.id        := -1
+    // 진행 중에 더 바깥 A급 레벨까지 쓸면 자리 승격
+    else if s.state == 1 and not na(lv) and ga and not s.gradeA and d * (s.level - lv) > 0
+        s.level  := lv
+        s.name   := nm
+        s.gradeA := true
+
+    if s.state == 1
+        if d * (s.ext - ext) > 0
+            s.ext    := ext
+            s.extBar := bar_index
+        closedOut = d * (s.level - close) > 0
+        s.outCnt := closedOut ? s.outCnt + 1 : 0
+        depthBad = d * (s.level - s.ext) > maxDepthAtr * atr
+        htfBreak = invNew and d * (s.level - invClose) > 0
+        expired  = bar_index - s.startBar > maxWait
+
+        [mnv, mnb] = pivBefore(mnV, mnB, s.extBar)
+        [mjv, mjb] = pivBefore(mjV, mjB, s.extBar)
+        float big = na(mjv) ? mnv : na(mnv) ? mjv : d == 1 ? math.max(mjv, mnv) : math.min(mjv, mnv)
+        int   bigBar = na(mjv) ? mnb : na(mnv) ? mjb : (d * (mjv - mnv) >= 0 ? mjb : mnb)
+        s.liveMinor := mnv
+        s.liveBig   := big
+
+        if s.outCnt > reclaimBars or depthBad or htfBreak
+            if s.reclaimed
+                label.new(bar_index, ext, "돌파 — " + s.name + " 밖 마감", style = d == 1 ? label.style_label_up : label.style_label_down, color = color.new(color.gray, 70), textcolor = color.white, size = size.tiny)
+            s.state := 0
+        else if expired
+            s.state := 0
+        else
+            // 2) 스윕 확정 (레벨 안으로 복귀 마감) — 통계용 '즉시 진입' 기록
+            if not s.reclaimed and not closedOut
+                s.reclaimed := true
+                s.id := recRange.size()
+                recRange.push(inRange)
+                recChoch.push(false)
+                recImm.push(0)
+                recRaw.push(0)
+                recSig.push(0)
+                recTaken.push(false)
+                stop0 = s.ext - d * slBuf
+                [t0, rr0] = calcTarget(d, close, stop0, oppLiq)
+                trades.push(Trade.new(d, 0, close, stop0, t0, bar_index, s.id))
+                label.new(s.extBar, s.ext, "스윕 " + s.name + (s.gradeA ? "" : " (B급)"), style = d == 1 ? label.style_label_up : label.style_label_down, color = color.new(s.gradeA ? color.orange : color.gray, 40), textcolor = color.white, size = size.tiny)
+
+            if s.reclaimed and not closedOut
+                // 3) 큰 전환 = 신호
+                if not na(big) and d * (close - big) > 0
+                    stop = s.ext - d * slBuf
+                    [tgt, rr] = calcTarget(d, close, stop, oppLiq)
+                    recChoch.set(s.id, true)
+                    trades.push(Trade.new(d, 1, close, stop, tgt, bar_index, s.id))
+
+                    string bad  = ""
+                    string warn = ""
+                    if not s.gradeA
+                        if blockB
+                            bad += "· B급 자리 (세션 안 자잘한 " + side + ")\n"
+                        else
+                            warn += "· B급 자리\n"
+                    if ctBias
+                        if blockCT
+                            bad += "· 큰 봉 반대 (" + biasTF + " " + (d == 1 ? "고점 낮아지는 중" : "저점 높아지는 중") + ")\n"
+                        else
+                            warn += "· 역추세\n"
+                    if inPreNY
+                        if blockPreNY
+                            bad += "· 뉴욕 개장 직전 (개장전 흔들림)\n"
+                        else
+                            warn += "· 뉴욕 개장 직전\n"
+                    if rr < minRR
+                        bad += "· 손익비 1:" + str.tostring(rr, "#.##") + " < " + str.tostring(minRR) + "\n"
+                    else if rr < fullRR
+                        warn += "· 손익비 1:" + str.tostring(rr, "#.##") + " → 사이즈 줄이기\n"
+                    if inAsia
+                        warn += "· 아시아 세션: 목표가 가까움\n"
+
+                    dirTxt = d == 1 ? "LONG" : "SHORT"
+                    info = "자리: " + s.name + " " + fmt(s.level) + "\n진입 " + fmt(close) + " / 손절 " + fmt(stop) + " / 익절 " + fmt(tgt) + "\n손익비 1:" + str.tostring(rr, "#.##")
+                    line.new(bigBar, big, bar_index, big, color = d == 1 ? color.teal : color.maroon, width = 2)
+                    if bad == ""
+                        recTaken.set(s.id, true)
+                        trades.push(Trade.new(d, 2, close, stop, tgt, bar_index, s.id))
+                        line.new(bar_index, close, bar_index + 16, close, color = color.gray, width = 1)
+                        line.new(bar_index, stop, bar_index + 16, stop, color = color.red, width = 2)
+                        line.new(bar_index, tgt, bar_index + 16, tgt, color = color.green, width = 2)
+                        lbl = "큰 전환 마감 ✅ " + dirTxt + (warn != "" ? " ⚠" : "")
+                        label.new(bar_index, s.ext, lbl, style = d == 1 ? label.style_label_up : label.style_label_down, color = d == 1 ? color.teal : color.maroon, textcolor = color.white, size = size.normal, tooltip = info + (warn != "" ? "\n\n주의\n" + warn : ""))
+                        alert(dirTxt + " 신호 (" + syminfo.ticker + ")\n" + info + (warn != "" ? "\n주의\n" + warn : ""), alert.freq_once_per_bar_close)
+                    else if showPass
+                        label.new(bar_index, s.ext, "큰 전환 — 패스 ✖", style = d == 1 ? label.style_label_up : label.style_label_down, color = color.new(color.gray, 30), textcolor = color.white, size = size.small, tooltip = info + "\n\n안 들어가는 이유\n" + bad + (warn != "" ? "\n주의\n" + warn : ""))
+                    s.state := 0
+                // 작은 전환 = 아직 아님
+                else if not na(mnv) and d * (close - mnv) > 0 and not s.mssDone
+                    s.mssDone := true
+                    if showMSS
+                        line.new(mnb, mnv, bar_index, mnv, color = color.gray, style = line.style_dashed)
+                        label.new(bar_index, mnv, "작은 전환 — 아직 아님", style = d == 1 ? label.style_label_lower_left : label.style_label_upper_left, color = color.new(color.gray, 60), textcolor = color.white, size = size.tiny, tooltip = "바로 앞 작은 " + (d == 1 ? "고점" : "저점") + "만 넘김.\n큰 " + (d == 1 ? "고점 " : "저점 ") + (na(big) ? "-" : fmt(big)) + " 종가 돌파를 기다릴 것.")
+
+    // 진행 중 기준선(큰 전환 레벨) 표시
+    if s.state == 1 and s.reclaimed and not na(s.liveBig)
+        if na(s.liveLn)
+            s.liveLn := line.new(bar_index - 1, s.liveBig, bar_index, s.liveBig, color = color.new(d == 1 ? color.teal : color.maroon, 30), style = line.style_dotted, width = 2)
+        else
+            s.liveLn.set_xy1(s.startBar, s.liveBig)
+            s.liveLn.set_xy2(bar_index + 3, s.liveBig)
+    else if not na(s.liveLn)
+        s.liveLn.delete()
+        s.liveLn := na
+    true
+
+setupText(Setup s) =>
+    string t = "대기"
+    if s.state == 1
+        t := s.name + " " + fmt(s.level) + (s.gradeA ? " (A급)" : " (B급)") + (s.reclaimed ? "" : " · 복귀 대기")
+    t
+
+waitText(Setup s) =>
+    string t = "-"
+    if s.state == 1 and s.reclaimed
+        t := "작은 " + (na(s.liveMinor) ? "-" : fmt(s.liveMinor)) + (s.mssDone ? " ✔" : "") + " / 큰 " + (na(s.liveBig) ? "-" : fmt(s.liveBig))
+    t
+
+pct(int a, int b) =>
+    b > 0 ? str.tostring(100.0 * a / b, "#") + "%" : "-"
+
+// ───── 레벨 ─────
+[dH, dL] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pwH, pwL] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+wkLen = math.max(1, int(math.round(7 * 86400 / timeframe.in_seconds())))
+r7H = ta.highest(high, wkLen)[1]
+r7L = ta.lowest(low, wkLen)[1]
+wkH = wMode == "전주" ? pwH : r7H
+wkL = wMode == "전주" ? pwL : r7L
+wName = wMode == "전주" ? "전주" : "7일"
+
+bPH = ta.pivothigh(high, bLen, bLen)
+bPL = ta.pivotlow(low, bLen, bLen)
+var float bHi = na
+var float bLo = na
+
+// ───── 구조 피벗 ─────
+mnPH = ta.pivothigh(high, minorLen, minorLen)
+mnPL = ta.pivotlow(low, minorLen, minorLen)
+mjPH = ta.pivothigh(high, majorLen, majorLen)
+mjPL = ta.pivotlow(low, majorLen, majorLen)
+var mnHv = array.new<float>()
+var mnHb = array.new<int>()
+var mnLv = array.new<float>()
+var mnLb = array.new<int>()
+var mjHv = array.new<float>()
+var mjHb = array.new<int>()
+var mjLv = array.new<float>()
+var mjLb = array.new<int>()
+
+// ───── 큰 봉 방향 ─────
+fBias(int n) =>
+    ph = ta.pivothigh(high, 2, 2)
+    pl = ta.pivotlow(low, 2, 2)
+    var hs = array.new<float>()
+    var ls = array.new<float>()
+    if not na(ph)
+        hs.unshift(ph)
+        if hs.size() > 4
+            hs.pop()
+    if not na(pl)
+        ls.unshift(pl)
+        if ls.size() > 4
+            ls.pop()
+    bool lh = hs.size() >= n
+    bool hl = ls.size() >= n
+    if lh
+        for i = 0 to n - 2
+            if hs.get(i) >= hs.get(i + 1)
+                lh := false
+    if hl
+        for i = 0 to n - 2
+            if ls.get(i) <= ls.get(i + 1)
+                hl := false
+    // 마지막 낮은 고점(높은 저점)을 종가로 넘기면 그 구조는 끝
+    bear = lh ? close < hs.get(0) : false
+    bull = hl ? close > ls.get(0) : false
+    [bear[1], bull[1]]
+
+[htfBear, htfBull] = request.security(syminfo.tickerid, biasTF, fBias(biasCount), lookahead = barmerge.lookahead_on)
+invClose = request.security(syminfo.tickerid, invTF, close[1], lookahead = barmerge.lookahead_on)
+invNew   = timeframe.change(invTF)
+
+atr     = ta.atr(14)
+inAsia  = not na(time(timeframe.period, asiaSess, asiaTZ))
+inPreNY = not na(time(timeframe.period, preNYSess, "America/New_York"))
+inRange = time >= timenow - statDays * 86400000
+
+// ───── 실행 (봉 마감 기준) ─────
+if barstate.isconfirmed
+    pushPiv(mnHv, mnHb, mnPH, bar_index - minorLen)
+    pushPiv(mnLv, mnLb, mnPL, bar_index - minorLen)
+    pushPiv(mjHv, mjHb, mjPH, bar_index - majorLen)
+    pushPiv(mjLv, mjLb, mjPL, bar_index - majorLen)
+    if not na(bPH)
+        bHi := bPH
+    if not na(bPL)
+        bLo := bPL
+
+    // 결과 판정 (같은 봉에 손절·익절 둘 다 닿으면 손절로 친다)
+    if trades.size() > 0
+        for i = trades.size() - 1 to 0
+            t = trades.get(i)
+            if bar_index > t.bar
+                hitS = t.dir == 1 ? low <= t.stop : high >= t.stop
+                hitT = t.dir == 1 ? high >= t.tgt : low <= t.tgt
+                if hitS or hitT
+                    res = hitS ? -1 : 1
+                    if t.kind == 0
+                        recImm.set(t.id, res)
+                    else if t.kind == 1
+                        recRaw.set(t.id, res)
+                    else
+                        recSig.set(t.id, res)
+                    trades.remove(i)
+
+    step(L, dL, wkL, bLo, mnHv, mnHb, mjHv, mjHb, dH, htfBear, invNew, invClose, inAsia, inPreNY, atr, inRange, wName)
+    step(S, dH, wkH, bHi, mnLv, mnLb, mjLv, mjLb, dL, htfBull, invNew, invClose, inAsia, inPreNY, atr, inRange, wName)
+
+    // 한 번 쓸린 스윙 레벨은 버린다
+    if not na(bLo) and low < bLo
+        bLo := na
+    if not na(bHi) and high > bHi
+        bHi := na
+
+// ───── 레벨 선 ─────
+plot(showLv and useD ? dH : na, "전일 고점", color.new(color.orange, 20), 1, plot.style_stepline)
+plot(showLv and useD ? dL : na, "전일 저점", color.new(color.orange, 20), 1, plot.style_stepline)
+plot(showLv and useW ? wkH : na, "주간 고점", color.new(color.purple, 20), 2, plot.style_stepline)
+plot(showLv and useW ? wkL : na, "주간 저점", color.new(color.purple, 20), 2, plot.style_stepline)
+plot(showLv and useB ? bHi : na, "스윙 고점 (B급)", color.new(color.gray, 40), 1, plot.style_circles)
+plot(showLv and useB ? bLo : na, "스윙 저점 (B급)", color.new(color.gray, 40), 1, plot.style_circles)
+
+// ───── 현재 상태 표 ─────
+var table panel = table.new(position.top_right, 3, 7, bgcolor = color.new(color.black, 20), border_width = 1, border_color = color.new(color.gray, 60))
+if showPanel and barstate.islast
+    tc = color.white
+    panel.cell(0, 0, "", text_color = tc, text_size = size.small)
+    panel.cell(1, 0, "롱 (저점 스윕)", text_color = color.teal, text_size = size.small)
+    panel.cell(2, 0, "숏 (고점 스윕)", text_color = color.red, text_size = size.small)
+    panel.cell(0, 1, "① 자리", text_color = tc, text_size = size.small)
+    panel.cell(1, 1, setupText(L), text_color = tc, text_size = size.small)
+    panel.cell(2, 1, setupText(S), text_color = tc, text_size = size.small)
+    panel.cell(0, 2, "② 기다리는 종가", text_color = tc, text_size = size.small)
+    panel.cell(1, 2, waitText(L), text_color = tc, text_size = size.small)
+    panel.cell(2, 2, waitText(S), text_color = tc, text_size = size.small)
+    panel.cell(0, 3, "③ " + biasTF + " 방향", text_color = tc, text_size = size.small)
+    panel.cell(1, 3, htfBear ? "✖ 고점 낮아지는 중" : "OK", text_color = htfBear ? color.red : color.lime, text_size = size.small)
+    panel.cell(2, 3, htfBull ? "✖ 저점 높아지는 중" : "OK", text_color = htfBull ? color.red : color.lime, text_size = size.small)
+    sessTxt = inPreNY ? "✖ 뉴욕 개장 직전" : inAsia ? "⚠ 아시아 (목표 가까움)" : "OK"
+    panel.cell(0, 4, "④ 시간", text_color = tc, text_size = size.small)
+    panel.cell(1, 4, sessTxt, text_color = tc, text_size = size.small)
+    panel.cell(2, 4, sessTxt, text_color = tc, text_size = size.small)
+    panel.cell(0, 5, "전일 고/저", text_color = tc, text_size = size.small)
+    panel.cell(1, 5, fmt(dL), text_color = tc, text_size = size.small)
+    panel.cell(2, 5, fmt(dH), text_color = tc, text_size = size.small)
+    panel.cell(0, 6, wName + " 고/저", text_color = tc, text_size = size.small)
+    panel.cell(1, 6, fmt(wkL), text_color = tc, text_size = size.small)
+    panel.cell(2, 6, fmt(wkH), text_color = tc, text_size = size.small)
+
+// ───── 통계 표 ─────
+var table stats = table.new(position.bottom_right, 2, 7, bgcolor = color.new(color.black, 20), border_width = 1, border_color = color.new(color.gray, 60))
+if showStats and barstate.islast
+    int n = 0
+    int immW = 0
+    int immL = 0
+    int ncW = 0
+    int ncL = 0
+    int nCh = 0
+    int rawW = 0
+    int rawL = 0
+    int nSig = 0
+    int sigW = 0
+    int sigL = 0
+    if recRange.size() > 0
+        for i = 0 to recRange.size() - 1
+            if recRange.get(i)
+                n += 1
+                im = recImm.get(i)
+                immW += im == 1 ? 1 : 0
+                immL += im == -1 ? 1 : 0
+                if recChoch.get(i)
+                    nCh += 1
+                    rw = recRaw.get(i)
+                    rawW += rw == 1 ? 1 : 0
+                    rawL += rw == -1 ? 1 : 0
+                else
+                    ncW += im == 1 ? 1 : 0
+                    ncL += im == -1 ? 1 : 0
+                if recTaken.get(i)
+                    nSig += 1
+                    sg = recSig.get(i)
+                    sigW += sg == 1 ? 1 : 0
+                    sigL += sg == -1 ? 1 : 0
+    tc = color.white
+    stats.cell(0, 0, "최근 " + str.tostring(statDays) + "일 · " + timeframe.period, text_color = tc, text_size = size.small)
+    stats.cell(1, 0, "결과 (손절 / 익절)", text_color = tc, text_size = size.small)
+    stats.cell(0, 1, "스윕 (꼬리로 뚫고 복귀)", text_color = tc, text_size = size.small)
+    stats.cell(1, 1, str.tostring(n) + "건", text_color = tc, text_size = size.small)
+    stats.cell(0, 2, "스윕 봉에 바로 진입", text_color = tc, text_size = size.small)
+    stats.cell(1, 2, "손절 " + pct(immL, immW + immL) + " (" + str.tostring(immL) + "/" + str.tostring(immW) + ")", text_color = color.red, text_size = size.small)
+    stats.cell(0, 3, "└ 큰 전환 안 나온 건", text_color = tc, text_size = size.small)
+    stats.cell(1, 3, "손절 " + pct(ncL, ncW + ncL) + " (" + str.tostring(ncL) + "/" + str.tostring(ncW) + ")", text_color = color.red, text_size = size.small)
+    stats.cell(0, 4, "큰 전환 마감까지 나온 건", text_color = tc, text_size = size.small)
+    stats.cell(1, 4, str.tostring(nCh) + "건 (" + pct(nCh, n) + ")", text_color = tc, text_size = size.small)
+    stats.cell(0, 5, "└ 마감 보고 진입", text_color = tc, text_size = size.small)
+    stats.cell(1, 5, "손절 " + pct(rawL, rawW + rawL) + " (" + str.tostring(rawL) + "/" + str.tostring(rawW) + ")", text_color = color.lime, text_size = size.small)
+    stats.cell(0, 6, "└ 필터까지 통과한 신호", text_color = tc, text_size = size.small)
+    stats.cell(1, 6, str.tostring(nSig) + "건 · 손절 " + pct(sigL, sigW + sigL), text_color = color.lime, text_size = size.small)
