@@ -11,7 +11,7 @@
 //
 //   권장: 골드(XAUUSD) 15분봉. 통계 재현은 1시간봉 + 주간 레벨만 켜고 확인.
 // ──────────────────────────────────────────────────────────────────────────────
-indicator("스윕 → 구조전환 마감", shorttitle = "Sweep→CHoCH", overlay = true, max_labels_count = 500, max_lines_count = 500)
+indicator("스윕 → 구조전환 마감", shorttitle = "Sweep→CHoCH", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
 
 // ───── ① 유동성 자리 ─────
 grpLv  = "① 유동성 자리 (스윕 대상)"
@@ -57,6 +57,9 @@ grpS      = "⑥ 표시 / 통계"
 showLv    = input.bool(true, "레벨 선 보기", group = grpS)
 showMSS   = input.bool(true, "작은 전환(MSS) 표시", group = grpS)
 showPass  = input.bool(true, "막힌 신호도 회색으로 표시", group = grpS)
+showRR    = input.bool(true, "손익비 박스 (익절 초록 / 손절 빨강)", group = grpS)
+rrPass    = input.bool(false, "막힌 신호도 손익비 박스 (흐리게)", group = grpS)
+rrMinW    = input.int(12, "손익비 박스 최소 폭 (봉)", minval = 2, group = grpS)
 showPanel = input.bool(true, "현재 상태 표", group = grpS)
 showStats = input.bool(true, "통계 표", group = grpS)
 statDays  = input.int(90, "통계 기간 (일)", minval = 1, group = grpS)
@@ -81,12 +84,16 @@ type Setup
 
 type Trade
     int   dir
-    int   kind                 // 0 = 스윕 복귀 봉 즉시 진입, 1 = CHoCH 전부, 2 = 필터 통과 신호
+    int   kind                 // 0 = 스윕 복귀 봉 즉시 진입, 1 = CHoCH 전부, 2 = 필터 통과 신호, 3 = 막힌 신호 (그림만)
     float entry
     float stop
     float tgt
     int   bar
     int   id
+    float rr
+    box   pb                   // 익절 구간
+    box   lb                   // 손절 구간
+    line  el                   // 진입가
 
 // ───── 기록 ─────
 var Setup L = Setup.new(1)
@@ -135,6 +142,17 @@ calcTarget(int d, float entry, float stop, float opp) =>
 
 fmt(float v) =>
     str.tostring(v, format.mintick)
+
+// 손익비 박스: 진입~익절(초록), 진입~손절(빨강)
+drawRR(Trade t, bool faded) =>
+    d  = t.dir
+    tp = d * (t.tgt - t.entry)
+    sl = d * (t.entry - t.stop)
+    r  = t.bar + rrMinW
+    t.pb := box.new(t.bar, math.max(t.entry, t.tgt), r, math.min(t.entry, t.tgt), border_color = color.new(color.green, faded ? 80 : 30), bgcolor = color.new(color.green, faded ? 92 : 78), text = "익절 " + fmt(t.tgt) + "   +" + fmt(tp) + "   손익비 1:" + str.tostring(t.rr, "#.##"), text_size = size.small, text_color = color.new(color.white, faded ? 50 : 0), text_halign = text.align_left, text_valign = d == 1 ? text.align_top : text.align_bottom)
+    t.lb := box.new(t.bar, math.max(t.entry, t.stop), r, math.min(t.entry, t.stop), border_color = color.new(color.red, faded ? 80 : 30), bgcolor = color.new(color.red, faded ? 92 : 78), text = "손절 " + fmt(t.stop) + "   -" + fmt(sl) + "   (1R)", text_size = size.small, text_color = color.new(color.white, faded ? 50 : 0), text_halign = text.align_left, text_valign = d == 1 ? text.align_bottom : text.align_top)
+    t.el := line.new(t.bar, t.entry, r, t.entry, color = color.new(color.white, faded ? 60 : 10), width = 2)
+    t
 
 // 한 방향 상태 머신 (봉 마감마다 1회)
 step(Setup s, float lvD, float lvW, float lvB, array<float> mnV, array<int> mnB, array<float> mjV, array<int> mjB, float oppLiq, bool ctBias, bool invNew, float invClose, bool inAsia, bool inPreNY, float atr, bool inRange, string wName) =>
@@ -213,7 +231,7 @@ step(Setup s, float lvD, float lvW, float lvB, array<float> mnV, array<int> mnB,
                 recTaken.push(false)
                 stop0 = s.ext - d * slBuf
                 [t0, rr0] = calcTarget(d, close, stop0, oppLiq)
-                trades.push(Trade.new(d, 0, close, stop0, t0, bar_index, s.id))
+                trades.push(Trade.new(d, 0, close, stop0, t0, bar_index, s.id, rr0))
                 label.new(s.extBar, s.ext, "스윕 " + s.name + (s.gradeA ? "" : " (B급)"), style = d == 1 ? label.style_label_up : label.style_label_down, color = color.new(s.gradeA ? color.orange : color.gray, 40), textcolor = color.white, size = size.tiny)
 
             if s.reclaimed and not closedOut
@@ -222,7 +240,7 @@ step(Setup s, float lvD, float lvW, float lvB, array<float> mnV, array<int> mnB,
                     stop = s.ext - d * slBuf
                     [tgt, rr] = calcTarget(d, close, stop, oppLiq)
                     recChoch.set(s.id, true)
-                    trades.push(Trade.new(d, 1, close, stop, tgt, bar_index, s.id))
+                    trades.push(Trade.new(d, 1, close, stop, tgt, bar_index, s.id, rr))
 
                     string bad  = ""
                     string warn = ""
@@ -253,14 +271,17 @@ step(Setup s, float lvD, float lvW, float lvB, array<float> mnV, array<int> mnB,
                     line.new(bigBar, big, bar_index, big, color = d == 1 ? color.teal : color.maroon, width = 2)
                     if bad == ""
                         recTaken.set(s.id, true)
-                        trades.push(Trade.new(d, 2, close, stop, tgt, bar_index, s.id))
-                        line.new(bar_index, close, bar_index + 16, close, color = color.gray, width = 1)
-                        line.new(bar_index, stop, bar_index + 16, stop, color = color.red, width = 2)
-                        line.new(bar_index, tgt, bar_index + 16, tgt, color = color.green, width = 2)
-                        lbl = "큰 전환 마감 ✅ " + dirTxt + (warn != "" ? " ⚠" : "")
+                        t2 = Trade.new(d, 2, close, stop, tgt, bar_index, s.id, rr)
+                        if showRR
+                            drawRR(t2, false)
+                        trades.push(t2)
+                        label.new(bar_index, close, "", yloc = d == 1 ? yloc.belowbar : yloc.abovebar, style = d == 1 ? label.style_triangleup : label.style_triangledown, color = d == 1 ? color.lime : color.red, size = size.small)
+                        lbl = "✅ " + dirTxt + " " + fmt(close) + "  1:" + str.tostring(rr, "#.##") + (warn != "" ? " ⚠" : "") + "\n큰 전환 마감"
                         label.new(bar_index, s.ext, lbl, style = d == 1 ? label.style_label_up : label.style_label_down, color = d == 1 ? color.teal : color.maroon, textcolor = color.white, size = size.normal, tooltip = info + (warn != "" ? "\n\n주의\n" + warn : ""))
                         alert(dirTxt + " 신호 (" + syminfo.ticker + ")\n" + info + (warn != "" ? "\n주의\n" + warn : ""), alert.freq_once_per_bar_close)
                     else if showPass
+                        if showRR and rrPass
+                            trades.push(drawRR(Trade.new(d, 3, close, stop, tgt, bar_index, s.id, rr), true))
                         label.new(bar_index, s.ext, "큰 전환 — 패스 ✖", style = d == 1 ? label.style_label_up : label.style_label_down, color = color.new(color.gray, 30), textcolor = color.white, size = size.small, tooltip = info + "\n\n안 들어가는 이유\n" + bad + (warn != "" ? "\n주의\n" + warn : ""))
                     s.state := 0
                 // 작은 전환 = 아직 아님
@@ -382,14 +403,24 @@ if barstate.isconfirmed
             if bar_index > t.bar
                 hitS = t.dir == 1 ? low <= t.stop : high >= t.stop
                 hitT = t.dir == 1 ? high >= t.tgt : low <= t.tgt
+                if not na(t.pb)
+                    r = math.max(bar_index, t.bar + rrMinW)
+                    t.pb.set_right(r)
+                    t.lb.set_right(r)
+                    t.el.set_x2(r)
                 if hitS or hitT
                     res = hitS ? -1 : 1
                     if t.kind == 0
                         recImm.set(t.id, res)
                     else if t.kind == 1
                         recRaw.set(t.id, res)
-                    else
+                    else if t.kind == 2
                         recSig.set(t.id, res)
+                    if not na(t.pb)
+                        win = res == 1
+                        pnl = win ? t.dir * (t.tgt - t.entry) : t.dir * (t.entry - t.stop)
+                        txt = (win ? "✔ 익절 +" : "✖ 손절 -") + fmt(pnl) + (win ? "  (+" + str.tostring(t.rr, "#.##") + "R)" : "  (-1R)") + "  · " + str.tostring(bar_index - t.bar) + "봉"
+                        label.new(bar_index, win ? t.tgt : t.stop, txt, style = label.style_label_left, color = color.new(win ? color.green : color.red, t.kind == 3 ? 70 : 10), textcolor = color.white, size = size.small)
                     trades.remove(i)
 
     step(L, dL, wkL, bLo, mnHv, mnHb, mjHv, mjHb, dH, htfBear, invNew, invClose, inAsia, inPreNY, atr, inRange, wName)
